@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Shared welcome header for the existing sign-in and Bedrock onboarding pickers.
 //! The logo occupies a fixed stage so its motion never shifts the choices below it.
 
@@ -126,8 +127,8 @@ impl WidgetRef for &WelcomeWidget {
         lines.push(Line::from(vec![
             "  ".into(),
             "Welcome to ".into(),
-            "Codex".bold(),
-            ", OpenAI's command-line coding agent".into(),
+            "ercode".bold(),
+            ", a coding agent based on OpenAI Codex".into(),
         ]));
 
         Paragraph::new(lines)
@@ -160,6 +161,29 @@ mod tests {
             }
             row.contains(needle)
         })
+    }
+
+    #[test]
+    fn welcome_identifies_ercode_and_its_upstream_origin() {
+        let widget = WelcomeWidget::new(
+            /*is_logged_in*/ false,
+            FrameRequester::test_dummy(),
+            /*animations_enabled*/ false,
+        );
+        let area = Rect::new(0, 0, 160, 4);
+        let mut buf = Buffer::empty(area);
+        (&widget).render_ref(area, &mut buf);
+        assert_eq!(
+            row_containing(
+                &buf,
+                "Welcome to ercode, a coding agent based on OpenAI Codex"
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            row_containing(&buf, "OpenAI's command-line coding agent"),
+            None
+        );
     }
 
     #[test]

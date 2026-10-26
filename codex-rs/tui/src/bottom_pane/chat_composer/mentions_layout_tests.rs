@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Production mention overlays retain the draft, status footer and editor cursor across scopes.
 
 use super::*;
@@ -11,7 +12,7 @@ fn composer() -> ChatComposer {
         /*has_input_focus*/ true,
         AppEventSender::new(tx),
         /*enhanced_keys_supported*/ false,
-        "Ask Codex".to_string(),
+        "Ask ercode".to_string(),
         /*disable_paste_burst*/ true,
     );
     composer.set_status_line_enabled(/*enabled*/ true);

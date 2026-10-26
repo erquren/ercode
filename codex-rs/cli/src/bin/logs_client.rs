@@ -1,3 +1,4 @@
+// ercode fork: defer home environment precedence to the shared config resolver.
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -17,8 +18,8 @@ use owo_colors::OwoColorize;
 #[command(name = "codex-state-logs")]
 #[command(about = "Tail Codex logs from the dedicated logs SQLite DB with simple filters")]
 struct Args {
-    /// Path to CODEX_HOME. Defaults to $CODEX_HOME or ~/.codex.
-    #[arg(long, env = "CODEX_HOME")]
+    /// Home override. Otherwise uses ERCODE_HOME, explicit CODEX_HOME, or ~/.ercode.
+    #[arg(long)]
     codex_home: Option<PathBuf>,
 
     /// Direct path to the logs SQLite database. Overrides --codex-home.

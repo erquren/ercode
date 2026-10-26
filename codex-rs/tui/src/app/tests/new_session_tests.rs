@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Replacement starts use server defaults and preserve the current task on failure.
 
 use super::*;
@@ -370,7 +371,7 @@ async fn replacement_uses_server_defaults_and_preserves_explicit_launch_settings
             let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 80)
                 .replace(&server_config.cwd.display().to_string(), "<PROJECT>");
             insta::assert_snapshot!(rendered, @r"
-            › Ask Codex to do anything
+            › Ask ercode to do anything
 
               server-model high · <PROJECT>
             ");

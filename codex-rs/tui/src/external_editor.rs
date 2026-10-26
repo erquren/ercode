@@ -1,3 +1,4 @@
+// ercode fork: keep fallback editor state in the isolated user home.
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -182,7 +183,7 @@ pub(crate) async fn run_editor(
         return Err(Report::msg("editor command is empty"));
     }
 
-    let default_codex_home = dirs::home_dir().map(|home| home.join(".codex"));
+    let default_codex_home = dirs::home_dir().map(|home| home.join(".ercode"));
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let project_codex_home = cwd.join(".codex");
     let mut candidate_homes = vec![codex_home];

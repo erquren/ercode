@@ -6,8 +6,10 @@ expression: "render_bottom_popup(&app.chat_widget, 80)"
   Not connected to the local background server.
 
 
-› 1. Install latest public stable
-     Use this CLI build (disabled)  This CLI has no local package to copy
+›    Install latest public stable (disabled)  Disabled for ercode: would install
+                                              upstream Codex
+     Use this CLI build (disabled)            This CLI has no local package to
+                                              copy
      Restart background server
 
   enter select · esc back

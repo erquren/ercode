@@ -1,3 +1,4 @@
+// ercode fork: diagnostic fallback follows explicit home precedence.
 //! Privileged sandbox setup shared by the setup helper and the service's ProvisionOnly path.
 //! Full and read-ACL setup remain helper entrypoints; only they may launch a read-ACL child.
 //! Command-line account provisioning cannot enter the service's admitted Core path.
@@ -482,7 +483,12 @@ pub fn main() -> Result<()> {
     let ret = real_main(&mut setup_mode);
     if let Err(e) = &ret {
         // Best-effort: log unexpected top-level errors.
-        if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        if let Some(codex_home) = ["ERCODE_HOME", "CODEX_HOME"]
+            .into_iter()
+            .find_map(|name| std::env::var_os(name).filter(|path| !path.is_empty()))
+            // An invalid primary override must not expose the legacy home.
+            .and_then(|path| path.into_string().ok())
+        {
             let sbx_dir = sandbox_dir(Path::new(&codex_home));
             let _ = std::fs::create_dir_all(&sbx_dir);
             // An unparsed payload must not enable writes to an existing log.

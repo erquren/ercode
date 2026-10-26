@@ -1,3 +1,4 @@
+// Modified for ercode: verify branded CLI versions retain daemon compatibility.
 use pretty_assertions::assert_eq;
 
 use super::ExecutableIdentity;
@@ -8,6 +9,14 @@ use super::parse_codex_version;
 fn parses_codex_cli_version_output() {
     assert_eq!(
         parse_codex_version("codex 1.2.3\n").expect("version"),
+        "1.2.3"
+    );
+}
+
+#[test]
+fn parses_ercode_cli_version_output() {
+    assert_eq!(
+        parse_codex_version("ercode 1.2.3\n").expect("version"),
         "1.2.3"
     );
 }

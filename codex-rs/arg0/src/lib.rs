@@ -1,3 +1,4 @@
+// ercode fork: document the isolated default home used by the shared resolver.
 use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
@@ -177,7 +178,7 @@ fn prepare_path_env_var_with_aliases(
 /// `codex-linux-sandbox` we *directly* execute
 /// [`codex_linux_sandbox::run_main`] (which never returns). Otherwise we:
 ///
-/// 1.  Load `.env` values from `~/.codex/.env` before creating any threads.
+/// 1.  Load `.env` values from `~/.ercode/.env` before creating any threads.
 /// 2.  Spawn a main runtime thread with a controlled stack size.
 /// 3.  Construct a Tokio multi-thread runtime.
 /// 4.  Capture the current executable path and derive the
@@ -267,12 +268,15 @@ fn build_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     Ok(builder.build()?)
 }
 
-const ILLEGAL_ENV_VAR_PREFIX: &str = "CODEX_";
+fn is_protected_env_key(key: &str) -> bool {
+    let uppercase = key.to_ascii_uppercase();
+    uppercase.starts_with("CODEX_") || uppercase.starts_with("ERCODE_")
+}
 
-/// Load env vars from ~/.codex/.env.
+/// Load env vars from ~/.ercode/.env.
 ///
 /// Security: Do not allow `.env` files to create or modify any variables
-/// with names starting with `CODEX_`.
+/// with names starting with `CODEX_` or `ERCODE_`.
 fn load_dotenv() {
     if let Ok(codex_home) = find_codex_home()
         && let Ok(iter) = dotenvy::from_path_iter(codex_home.join(".env"))
@@ -281,13 +285,13 @@ fn load_dotenv() {
     }
 }
 
-/// Helper to set vars from a dotenvy iterator while filtering out `CODEX_` keys.
+/// Helper to set vars from a dotenvy iterator while filtering protected keys.
 fn set_filtered<I>(iter: I)
 where
     I: IntoIterator<Item = Result<(String, String), dotenvy::Error>>,
 {
     for (key, value) in iter.into_iter().flatten() {
-        if !key.to_ascii_uppercase().starts_with(ILLEGAL_ENV_VAR_PREFIX) {
+        if !is_protected_env_key(&key) {
             // It is safe to call set_var() because our process is
             // single-threaded at this point in its execution.
             unsafe { std::env::set_var(&key, &value) };
@@ -522,6 +526,22 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dotenv_cannot_override_either_home_namespace() {
+        for name in [
+            "CODEX_HOME",
+            "codex_home",
+            "ERCODE_HOME",
+            "ercode_home",
+            "ERCODE_OTHER",
+        ] {
+            assert!(super::is_protected_env_key(name), "{name}");
+        }
+        for name in ["OPENAI_API_KEY", "PATH", "ERCODE", "MY_ERCODE_HOME"] {
+            assert!(!super::is_protected_env_key(name), "{name}");
+        }
+    }
+
     use super::Arg0DispatchPaths;
     use super::Arg0PathEntryGuard;
     use super::LOCK_FILENAME;

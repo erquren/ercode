@@ -1,3 +1,4 @@
+// ercode fork: use the same explicit home precedence as the central resolver.
 //! Resolves the host's symlink opt-out from its already-loaded user config.
 
 use crate::ConfigLayerSource;
@@ -20,8 +21,9 @@ pub fn allowed_symlinked_codex_home(
     }
 
     // Preserve a configured alias only when lexical normalization did not change its target.
-    let alias = std::env::var_os("CODEX_HOME")
-        .filter(|path| !path.is_empty())
+    let alias = ["ERCODE_HOME", "CODEX_HOME"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|path| !path.is_empty()))
         .and_then(|path| AbsolutePathBuf::from_absolute_path(path).ok())
         .filter(|path| path.canonicalize().ok().as_ref() == Some(codex_home));
     Some(alias.unwrap_or_else(|| codex_home.clone()))

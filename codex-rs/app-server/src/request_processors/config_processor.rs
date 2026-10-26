@@ -1,3 +1,4 @@
+// Modified for ercode: first-run API setup never mutates routes while credentials are active.
 use codex_app_server_protocol::ApplicationStorageRequirements;
 use std::sync::Arc;
 
@@ -167,6 +168,62 @@ impl ConfigRequestProcessor {
         &self,
         params: ConfigBatchWriteParams,
     ) -> Result<ClientResponsePayload, JSONRPCErrorError> {
+        let ercode_api_setup = params.edits.iter().any(|edit| {
+            edit.key_path == "model_provider" && edit.value.as_str() == Some("ercode-api")
+        });
+        let expected_api_config = if ercode_api_setup {
+            let provider = params
+                .edits
+                .iter()
+                .find(|edit| edit.key_path == "model_providers.ercode-api")
+                .ok_or_else(|| invalid_request("API setup is missing provider settings."))?;
+            let provider: codex_model_provider_info::ModelProviderInfo =
+                serde_json::from_value(provider.value.clone())
+                    .map_err(|_| invalid_request("Invalid API provider settings."))?;
+            let model = params
+                .edits
+                .iter()
+                .find(|edit| edit.key_path == "model")
+                .and_then(|edit| edit.value.as_str())
+                .filter(|model| !model.is_empty())
+                .ok_or_else(|| invalid_request("API setup is missing its model ID."))?
+                .to_owned();
+            Some((provider, model))
+        } else {
+            None
+        };
+        if ercode_api_setup {
+            self.model_catalog
+                .suspend_remote_refresh_for_api_setup()
+                .await;
+            // Do not invoke host-owned external credential providers during local setup.
+            let auth_manager = self.thread_manager.auth_manager();
+            if !auth_manager.is_login_method_allowed(ForcedLoginMethod::Api) {
+                return Err(invalid_request(
+                    "API setup is disabled by authentication policy.",
+                ));
+            }
+            if auth_manager.has_external_auth() || auth_manager.is_workload_identity_selected() {
+                return Err(invalid_request(
+                    "API setup cannot replace host-managed authentication. Use a separate ERCODE_HOME and remove the external auth configuration explicitly.",
+                ));
+            }
+            // Reload local/env/keyring state; another process may have signed in since startup.
+            auth_manager.reload().await;
+            if auth_manager.auth_cached().is_some() {
+                return Err(invalid_request(
+                    "API setup requires a signed-out home. Sign out explicitly or use a separate ERCODE_HOME; existing credentials were not changed.",
+                ));
+            }
+            if !params.edits.iter().any(|edit| {
+                edit.key_path == "features.api_key_model_discovery"
+                    && edit.value.as_bool() == Some(false)
+            }) {
+                return Err(invalid_request(
+                    "API setup must disable automatic model discovery.",
+                ));
+            }
+        }
         let session_defaults_only = !params.edits.is_empty()
             && params.edits.iter().all(|edit| {
                 matches!(
@@ -180,6 +237,27 @@ impl ConfigRequestProcessor {
             });
         let should_reload = params.reload_user_config;
         let response = self.batch_write_inner(params).await?;
+        if ercode_api_setup {
+            self.model_catalog.invalidate().await;
+            // Resolve the committed provider before accepting a subsequent key save.
+            let (config, _) = self.model_catalog.current().await.map_err(|_| {
+                internal_error("API configuration was written but could not be reloaded; no key has been saved.")
+            })?;
+            let (expected_provider, expected_model) =
+                expected_api_config.as_ref().expect("API setup settings");
+            if !ercode_api_config_matches(
+                &config.model_provider_id,
+                &config.model_provider,
+                config.model.as_deref(),
+                config.features.enabled(Feature::ApiKeyModelDiscovery),
+                expected_provider,
+                expected_model,
+            ) {
+                return Err(invalid_request(
+                    "API settings are overridden by another configuration layer; no key has been saved. Remove the override or use a separate ERCODE_HOME.",
+                ));
+            }
+        }
         if !session_defaults_only {
             self.handle_config_mutation().await;
             if should_reload {
@@ -364,6 +442,20 @@ impl ConfigRequestProcessor {
             }
         }
     }
+}
+
+fn ercode_api_config_matches(
+    provider_id: &str,
+    provider: &codex_model_provider_info::ModelProviderInfo,
+    model: Option<&str>,
+    discovery_enabled: bool,
+    expected_provider: &codex_model_provider_info::ModelProviderInfo,
+    expected_model: &str,
+) -> bool {
+    provider_id == "ercode-api"
+        && provider == expected_provider
+        && model == Some(expected_model)
+        && !discovery_enabled
 }
 
 pub(super) async fn reload_user_config(
@@ -962,6 +1054,58 @@ mod tests {
     use pretty_assertions::assert_eq;
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    #[test]
+    fn api_setup_rejects_effective_route_and_model_overrides_before_key_save() {
+        let provider = codex_model_provider_info::ModelProviderInfo {
+            name: "ercode API".into(),
+            base_url: Some("https://provider.example/v1".into()),
+            requires_openai_auth: true,
+            ..Default::default()
+        };
+        assert!(super::ercode_api_config_matches(
+            "ercode-api",
+            &provider,
+            Some("chosen-model"),
+            false,
+            &provider,
+            "chosen-model"
+        ));
+        assert!(!super::ercode_api_config_matches(
+            "openai",
+            &provider,
+            Some("chosen-model"),
+            false,
+            &provider,
+            "chosen-model"
+        ));
+        assert!(!super::ercode_api_config_matches(
+            "ercode-api",
+            &provider,
+            Some("override-model"),
+            false,
+            &provider,
+            "chosen-model"
+        ));
+        assert!(!super::ercode_api_config_matches(
+            "ercode-api",
+            &provider,
+            Some("chosen-model"),
+            true,
+            &provider,
+            "chosen-model"
+        ));
+        let mut old_route = provider.clone();
+        old_route.base_url = Some("https://old-provider.example/v1".into());
+        assert!(!super::ercode_api_config_matches(
+            "ercode-api",
+            &old_route,
+            Some("chosen-model"),
+            false,
+            &provider,
+            "chosen-model"
+        ));
+    }
 
     #[tokio::test]
     async fn reload_user_config_preserves_promoted_mcp_allowlist_denial() -> anyhow::Result<()> {

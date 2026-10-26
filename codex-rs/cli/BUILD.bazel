@@ -8,7 +8,8 @@ load("//bazel/rules:runtime_package.bzl", "release_binary")
 
 codex_rust_crate(
     name = "cli",
-    binaries_with_build_commit = ["codex"],
+    # ercode fork: stamp both public and compatibility executables.
+    binaries_with_build_commit = ["codex", "ercode"],
     crate_name = "codex_cli",
     extra_binaries = [
         "//codex-rs/bwrap:bwrap",

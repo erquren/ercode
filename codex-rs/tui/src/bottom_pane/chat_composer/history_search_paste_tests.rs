@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Pasted text edits the active history query while preserving the original draft.
 
 use super::super::super::chat_composer_history::HistoryEntry;
@@ -22,7 +23,7 @@ fn composer_with_history() -> ChatComposer {
         /*has_input_focus*/ true,
         AppEventSender::new(tx),
         /*enhanced_keys_supported*/ false,
-        "Ask Codex to do anything".to_string(),
+        "Ask ercode to do anything".to_string(),
         /*disable_paste_burst*/ false,
     );
     for entry in ["git status", "git log"] {

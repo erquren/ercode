@@ -1,3 +1,4 @@
+// ercode fork: exercise isolated-home precedence and propagation across re-exec.
 use std::sync::Mutex;
 #[cfg(unix)]
 use std::time::Duration;
@@ -57,14 +58,18 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
 
-    for (delete_cwd, home_name) in [
-        (false, "home"),
-        (true, "home"),
-        (false, "alias"),
-        (true, "alias"),
+    for (delete_cwd, home_name, ercode_override) in [
+        (false, "home", false),
+        (true, "home", false),
+        (false, "alias", false),
+        (true, "alias", false),
+        (false, "home", true),
+        (true, "home", true),
+        (false, "alias", true),
+        (true, "alias", true),
         // macOS filesystems reject non-Unicode names.
         #[cfg(target_os = "linux")]
-        (false, "link/../home"),
+        (false, "link/../home", false),
     ] {
         let home = TempDir::new().expect("home");
         let project = home.path().join("project");
@@ -84,7 +89,7 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
         let executable = home.path().join("updater");
         std::fs::write(
         &executable,
-        b"#!/bin/sh\ntest -d \"$CODEX_HOME\" || exit 1\n{ pwd -P; printf '%s\\n' \"$CODEX_HOME\" \"$CODEX_SQLITE_HOME\" \"$AWS_CONFIG_FILE\" \"$SSL_CERT_DIR\" \"$NPM_CONFIG_CAFILE\"; } > \"$CODEX_TEST_UPDATER_OUTPUT\"\n",
+        b"#!/bin/sh\ntest -d \"$CODEX_HOME\" || exit 1\ntest \"$ERCODE_HOME\" = \"$CODEX_HOME\" || exit 2\n{ pwd -P; printf '%s\\n' \"$CODEX_HOME\" \"$CODEX_SQLITE_HOME\" \"$AWS_CONFIG_FILE\" \"$SSL_CERT_DIR\" \"$NPM_CONFIG_CAFILE\"; } > \"$CODEX_TEST_UPDATER_OUTPUT\"\n",
     )
     .expect("updater shim");
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
@@ -108,7 +113,22 @@ fn updater_reexec_preserves_paths_and_recovers_deleted_working_directory() {
             .env("CODEX_TEST_UPDATER_STATE", &state)
             .env("CODEX_TEST_UPDATER_OUTPUT", &output)
             .env("CODEX_TEST_UPDATER_DELETE_CWD", delete_cwd.to_string())
-            .env("CODEX_HOME", format!("../{home_name}"))
+            .env(
+                "ERCODE_HOME",
+                if ercode_override {
+                    format!("../{home_name}")
+                } else {
+                    String::new()
+                },
+            )
+            .env(
+                "CODEX_HOME",
+                if ercode_override {
+                    "../missing-old-codex-home".to_string()
+                } else {
+                    format!("../{home_name}")
+                },
+            )
             .env("CODEX_SQLITE_HOME", " sqlite ")
             .env("AWS_CONFIG_FILE", "~/config")
             .env("NPM_CONFIG_CAFILE", ca_file)

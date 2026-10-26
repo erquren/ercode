@@ -1,9 +1,13 @@
+// Modified for ercode: never offer the upstream product installer for this fork.
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::InstallContext;
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::InstallMethod;
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::StandalonePlatform;
+
+#[cfg(not(debug_assertions))]
+pub(crate) const UPSTREAM_UPDATES_ENABLED: bool = false;
 
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +85,9 @@ impl UpdateAction {
 
 #[cfg(not(debug_assertions))]
 pub fn get_update_action() -> Option<UpdateAction> {
+    if !UPSTREAM_UPDATES_ENABLED {
+        return None;
+    }
     UpdateAction::from_install_context(InstallContext::current())
 }
 

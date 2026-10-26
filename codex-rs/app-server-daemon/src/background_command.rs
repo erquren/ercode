@@ -1,3 +1,4 @@
+// ercode fork: preserve the selected isolated home across background re-exec.
 //! Recovers background startup after the launching directory is removed.
 //! Preserve process-scoped paths; retain usable Unix cwd defaults for clients.
 
@@ -13,8 +14,9 @@ pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> 
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
         Err(err) => return Err(err.into()),
     };
-    if let Ok(value) = std::env::var("CODEX_HOME")
-        && !value.is_empty()
+    if let Some(value) = ["ERCODE_HOME", "CODEX_HOME"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()))
     {
         let home = codex_utils_home_dir::find_codex_home()?;
         // Remove parent components without discarding a valid configured symlink alias.
@@ -25,9 +27,10 @@ pub(crate) fn set_working_directory(command: &mut Command, state_dir: &Path) -> 
         } else if home.as_path().to_str().is_some() {
             home.as_path()
         } else {
-            // The home resolver ignores non-Unicode env values; keep the valid original alias.
+            // The canonical target can be non-Unicode; keep the valid original alias.
             absolute.as_path()
         };
+        command.env("ERCODE_HOME", preserved);
         command.env("CODEX_HOME", preserved);
     }
     // Preserve process-scoped paths before changing cwd; CA names match CUSTOM_CA_ENV_KEYS.

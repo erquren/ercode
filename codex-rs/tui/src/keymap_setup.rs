@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Guided keymap remapping UI for `/keymap`.
 //!
 //! This module owns the interactive editing flow that starts from a resolved
@@ -852,7 +853,7 @@ mod tests {
             frame_requester: FrameRequester::test_dummy(),
             has_input_focus: true,
             enhanced_keys_supported: false,
-            placeholder_text: "Ask Codex to do anything".to_string(),
+            placeholder_text: "Ask ercode to do anything".to_string(),
             disable_paste_burst: false,
             animations_enabled: false,
             effects: Default::default(),

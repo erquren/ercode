@@ -1,3 +1,4 @@
+// Modified for ercode: explain the fork-specific daemon update policy.
 use super::*;
 
 #[test]
@@ -12,7 +13,7 @@ fn running_daemon_replacement_prompt() {
     insta::assert_snapshot!(describe_install(&request), @r"
     Replace installed daemon version 0.152.0 with CLI version 0.0.0 from /cli/package.
     The daemon package will be installed in /home/packages/app-server-daemon.
-    The selected package will be pinned. Run `codex app-server daemon update` to return to production updates.
+    The selected package will be pinned. Official Codex updates are disabled in ercode; install a reviewed ercode package to update.
     The running daemon will restart; active or queued work may be interrupted.
     ");
 }

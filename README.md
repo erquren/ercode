@@ -1,81 +1,65 @@
-<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
-<p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
-</p>
-</br>
-If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
-</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
-</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
+<!-- Modified for the ercode fork: CLI branding and source-build instructions. -->
 
----
+# ercode
 
-## Quickstart
+**ercode** is a command-line coding agent based on the open-source
+[OpenAI Codex CLI](https://github.com/openai/codex). This is an independently
+maintained fork, not an official OpenAI product.
 
-### Installing and running Codex CLI
+This first version changes the command-line branding while keeping the upstream
+agent implementation and protocol compatibility. It does not add a desktop GUI.
 
-Run the following on Mac or Linux to install Codex CLI:
+## Build and run
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
+Install the Rust toolchain pinned in `codex-rs/rust-toolchain.toml`, then:
+
+```sh
+git clone https://github.com/erquren/ercode.git
+cd ercode
+# Until this work is merged, select the rebranding branch.
+git switch feature/ercode-cli-brand
+cd codex-rs
+cargo build --locked -p codex-cli --bin ercode
+./target/debug/ercode --help
 ```
 
-Run the following on Windows to install Codex CLI:
+On Windows, the executable is `target\debug\ercode.exe`. The command above is a
+CLI development build, not a complete distributable package. For normal use,
+build a package that also includes the code-mode host and platform resources:
 
-```shell
-powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```sh
+# From the repository root, for a native Linux x86_64 build:
+python3 scripts/build_ercode.py --target x86_64-unknown-linux-gnu \
+  --cargo-profile release --package-dir dist/ercode-linux \
+  --archive-output dist/ercode-linux.tar.gz
+./dist/ercode-linux/bin/ercode --help
 ```
 
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+See [installing and building](docs/install.md) for Windows, prerequisites and
+package details. No ercode npm package, installer or prebuilt release is promised
+by this branch. The upstream `@openai/codex` package installs official Codex,
+not this fork.
 
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
+## Compatibility
 
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
+- User configuration and authentication default to `~/.ercode`, separate from
+  official Codex. Home precedence is nonempty `ERCODE_HOME`, then an explicitly
+  set compatibility `CODEX_HOME`, then `~/.ercode`. No old credentials are copied.
+  Unset `CODEX_HOME` if your shell points it at an official Codex directory.
+- First-run setup is API-oriented: configure your API base URL and API key.
+  This fork does not include model weights or free service access; provider
+  accounts, charges and terms still apply.
+- Internal crate names, resource names and API identifiers may still say
+  `codex`. They are retained deliberately for compatibility, not as product
+  branding. Project-local `.codex` conventions remain compatible.
+- Official Codex self-update paths are disabled for this fork. Update ercode
+  from this repository and rebuild it instead.
 
-Codex CLI can also be installed via the following package managers:
+## License and attribution
 
-```shell
-# Install using npm
-npm install -g @openai/codex
-```
-
-```shell
-# Install using Homebrew
-brew install --cask codex
-```
-
-Then simply run `codex` to get started.
-
-<details>
-<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
-
-Each GitHub Release contains many executables, but in practice, you likely want one of these:
-
-- macOS
-  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
-  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
-- Linux
-  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
-  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
-
-Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
-
-</details>
-
-### Using Codex with your ChatGPT plan
-
-Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
-
-You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
-
-## Docs
-
-- [**Codex Documentation**](https://developers.openai.com/codex)
-- [**Contributing**](./docs/contributing.md)
-- [**Installing & building**](./docs/install.md)
-- [**Open source fund**](./docs/open-source-fund.md)
-
-This repository is licensed under the [Apache-2.0 License](LICENSE).
+The upstream code is licensed under [Apache-2.0](LICENSE). Preserve the upstream
+copyright and attribution information in [NOTICE](NOTICE), together with
+applicable third-party licenses, when redistributing it. Modified source files
+identify ercode fork changes. The package helper includes the repository's
+license and notice files; distributors remain responsible for reviewing licenses
+of the exact dependencies and resources they ship.

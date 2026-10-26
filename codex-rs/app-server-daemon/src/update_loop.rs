@@ -1,3 +1,4 @@
+// ercode fork: scope inherited home overrides to the selected daemon package.
 //! Owns scheduled and manual installs, daemon restarts, and updater replacement.
 
 use std::collections::VecDeque;
@@ -600,6 +601,7 @@ async fn run_installer_script(
         InstallerMode::Migration => ("0", "0", "", "1"),
     };
     let mut child = command
+        .env_remove("ERCODE_HOME")
         .env(
             "CODEX_HOME",
             package_root

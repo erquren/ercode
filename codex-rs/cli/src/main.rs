@@ -1,3 +1,4 @@
+// Modified for ercode: CLI branding and safe fork update behavior.
 use clap::Args;
 use clap::CommandFactory;
 use clap::Parser;
@@ -114,20 +115,21 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::user_input::UserInput;
 use codex_terminal_detection::TerminalName;
 
-/// Codex CLI
+/// ercode CLI — an independent fork of OpenAI Codex
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
 #[clap(
+    name = "ercode",
     author,
     version,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
     // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // the generic `ercode` command name that users run.
+    bin_name = "ercode",
+    override_usage = "ercode [OPTIONS] [PROMPT]\n       ercode [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -154,7 +156,7 @@ enum Subcommand {
     /// Internal: forward a local TCP socket through an HTTP/3 CONNECT proxy.
     #[clap(hide = true)]
     TcpTunnel(codex_tcp_tunnel::Args),
-    /// Run Codex non-interactively.
+    /// Run ercode non-interactively.
     #[clap(visible_alias = "e")]
     Exec(ExecCli),
 
@@ -167,10 +169,10 @@ enum Subcommand {
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
-    /// Manage external MCP servers for Codex.
+    /// Manage external MCP servers for ercode.
     Mcp(McpCli),
 
-    /// Manage Codex plugins.
+    /// Manage ercode plugins.
     Plugin(PluginCli),
 
     /// [experimental] Run the app server or related tooling.
@@ -179,20 +181,20 @@ enum Subcommand {
     /// [experimental] Manage the app-server daemon with remote control enabled.
     RemoteControl(RemoteControlCommand),
 
-    /// Launch the Desktop app (opens the app installer if missing).
+    /// Launch the official OpenAI Codex Desktop app (separate from ercode).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     App(app_cmd::AppCommand),
 
     /// Generate shell completion scripts.
     Completion(CompletionCommand),
 
-    /// Update Codex to the latest version.
+    /// Show instructions for updating this ercode fork.
     Update,
 
-    /// Diagnose local Codex installation, config, auth, and runtime health.
+    /// Diagnose local ercode installation, config, auth, and runtime health.
     Doctor(DoctorCommand),
 
-    /// Run commands within a Codex-provided sandbox.
+    /// Run commands within the coding-agent sandbox.
     Sandbox(SandboxCommand),
 
     /// Debugging tools.
@@ -202,7 +204,7 @@ enum Subcommand {
     #[clap(hide = true)]
     Execpolicy(ExecpolicyCommand),
 
-    /// Apply the latest diff produced by Codex agent as a `git apply` to your local working tree.
+    /// Apply the latest diff produced by the ercode agent as a `git apply` to your local working tree.
     #[clap(visible_alias = "a")]
     Apply(ApplyCommand),
 
@@ -525,13 +527,13 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | ercode login --with-api-key`)"
     )]
     with_api_key: bool,
 
     #[arg(
         long = "with-access-token",
-        help = "Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`)"
+        help = "Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | ercode login --with-access-token`)"
     )]
     with_access_token: bool,
 
@@ -803,9 +805,16 @@ fn run_update_action(
     action: UpdateAction,
     cli_executable: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(
+            action,
+            UpdateAction::Daemon(codex_tui::DaemonUpdateSource::ThisCli)
+        ),
+        "ercode does not run official Codex updates; use a reviewed ercode package instead."
+    );
     if let UpdateAction::Daemon(source) = action {
         let executable = cli_executable
-            .ok_or_else(|| anyhow::anyhow!("Cannot locate the launching Codex CLI"))?;
+            .ok_or_else(|| anyhow::anyhow!("Cannot locate the launching ercode CLI"))?;
         println!("Updating the local background server...");
         let status = std::process::Command::new(executable)
             .args(source.command_args())
@@ -815,9 +824,13 @@ fn run_update_action(
             status.success(),
             "Daemon update failed with status {status}"
         );
-        println!("Relaunch Codex to reconnect.");
+        println!("Relaunch ercode to reconnect.");
         return Ok(());
     }
+    anyhow::ensure!(
+        matches!(action, UpdateAction::Daemon(_)),
+        "ercode does not run the official Codex installer; rebuild this fork instead."
+    );
     println!();
     let cmd_str = action.command_str();
     println!("Updating Codex via `{cmd_str}`...");
@@ -883,23 +896,27 @@ fn resolve_windows_update_command_from_path(
         .ok_or_else(|| anyhow::anyhow!("could not find update command `{command}` on PATH"))
 }
 
-fn run_update_command() -> anyhow::Result<()> {
-    #[cfg(debug_assertions)]
-    {
-        anyhow::bail!(
-            "`codex update` is not available in debug builds. Install a release build of Codex to use this command."
-        );
-    }
+fn ensure_ercode_daemon_update_source(command: &AppServerDaemonSubcommand) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !matches!(
+            command,
+            AppServerDaemonSubcommand::Update {
+                from_cli: false,
+                ..
+            } | AppServerDaemonSubcommand::PidUpdateLoop {
+                check_package_ownership: false,
+                ..
+            }
+        ),
+        "ercode disables official Codex daemon downloads and automatic updates. Use `ercode app-server daemon update --from-cli` with a reviewed ercode package."
+    );
+    Ok(())
+}
 
-    #[cfg(not(debug_assertions))]
-    {
-        let Some(action) = codex_tui::get_update_action() else {
-            anyhow::bail!(
-                "Could not detect the Codex installation method. Please update manually: https://developers.openai.com/codex/cli/"
-            );
-        };
-        run_update_action(action, /*cli_executable*/ None)
-    }
+fn run_update_command() -> anyhow::Result<()> {
+    anyhow::bail!(
+        "ercode does not use the official Codex updater. Rebuild or install a reviewed ercode package from https://github.com/erquren/ercode."
+    )
 }
 
 fn run_execpolicycheck(cmd: ExecPolicyCheckCommand) -> anyhow::Result<()> {
@@ -1062,6 +1079,11 @@ async fn cli_main(
         subcommand,
     } = config_override_args::try_parse_from(std::env::args_os())
         .unwrap_or_else(|error| error.exit());
+    if let Some(Subcommand::AppServer(app_server)) = &subcommand
+        && let Some(AppServerSubcommand::Daemon(daemon)) = &app_server.subcommand
+    {
+        ensure_ercode_daemon_update_source(&daemon.subcommand)?;
+    }
     // Retain the launch target through TUI exit, even if a launcher changes selection.
     let daemon_cli_executable = arg0_paths
         .codex_self_exe
@@ -1083,7 +1105,7 @@ async fn cli_main(
         && let Some(agents_endpoint) = &options.remote.remote
         && root_endpoint != agents_endpoint
     {
-        anyhow::bail!("`codex agents` received conflicting remote server endpoints");
+        anyhow::bail!("`ercode agents` received conflicting remote server endpoints");
     }
     let root_remote = agents_options
         .and_then(|options| options.remote.remote.clone())
@@ -1114,7 +1136,7 @@ async fn cli_main(
             );
             if open_agents_overview {
                 if interactive.prompt.is_some() || !interactive.images.is_empty() {
-                    anyhow::bail!("`codex agents` does not accept an initial prompt or images");
+                    anyhow::bail!("`ercode agents` does not accept an initial prompt or images");
                 }
                 if root_remote.is_some()
                     && (interactive.oss
@@ -1132,12 +1154,12 @@ async fn cli_main(
                             }))
                 {
                     anyhow::bail!(
-                        "`codex agents` cannot apply local provider or additional-directory overrides to a remote server"
+                        "`ercode agents` cannot apply local provider or additional-directory overrides to a remote server"
                     );
                 }
                 if is_workload_identity_selected() {
                     anyhow::bail!(
-                        "`codex agents` is unavailable while workload identity is active"
+                        "`ercode agents` is unavailable while workload identity is active"
                     );
                 }
                 if root_remote.is_none() {
@@ -1146,7 +1168,7 @@ async fn cli_main(
                         root_remote_auth_token_env.clone(),
                     )?;
                     #[cfg(not(any(unix, windows)))]
-                    anyhow::bail!("`codex agents` requires `--remote` on this platform");
+                    anyhow::bail!("`ercode agents` requires `--remote` on this platform");
                 }
                 interactive.agents_overview = true;
             }
@@ -1689,7 +1711,7 @@ async fn cli_main(
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | ercode login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -1818,7 +1840,7 @@ async fn cli_main(
             #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
             {
                 let _ = loader_overrides;
-                anyhow::bail!("`codex sandbox` is not supported on this operating system");
+                anyhow::bail!("`ercode sandbox` is not supported on this operating system");
             }
         }
         Some(Subcommand::Debug(DebugCommand { subcommand })) => match subcommand {
@@ -1999,7 +2021,7 @@ fn profile_v2_for_subcommand<'a>(
             subcommand: DebugSubcommand::PromptInput(_),
         }) => Ok(Some(profile_v2)),
         _ => anyhow::bail!(
-            "--profile only applies to runtime commands, `codex mcp`, and `codex migrate-nfs-db`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex queue`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex migrate-nfs-db`, `codex sandbox`, and `codex debug prompt-input`."
+            "--profile only applies to runtime commands, `ercode mcp`, and `ercode migrate-nfs-db`: `ercode`, `ercode exec`, `ercode review`, `ercode resume`, `ercode queue`, `ercode archive`, `ercode delete`, `ercode unarchive`, `ercode fork`, `ercode mcp`, `ercode migrate-nfs-db`, `ercode sandbox`, and `ercode debug prompt-input`."
         ),
     }
 }
@@ -2266,12 +2288,12 @@ fn reject_remote_mode_for_subcommand(
 ) -> anyhow::Result<()> {
     if let Some(remote) = remote {
         anyhow::bail!(
-            "`--remote {remote}` is only supported for interactive TUI commands, not `codex {subcommand}`"
+            "`--remote {remote}` is only supported for interactive TUI commands, not `ercode {subcommand}`"
         );
     }
     if remote_auth_token_env.is_some() {
         anyhow::bail!(
-            "`--remote-auth-token-env` is only supported for interactive TUI commands, not `codex {subcommand}`"
+            "`--remote-auth-token-env` is only supported for interactive TUI commands, not `ercode {subcommand}`"
         );
     }
     Ok(())
@@ -2301,12 +2323,12 @@ fn reject_unsupported_worktree_for_subcommand(
         None => Ok(()),
         Some(Subcommand::Fork(command)) if command.session_id.is_some() && !command.last => Ok(()),
         Some(Subcommand::Fork(_)) => {
-            anyhow::bail!("`codex fork --worktree` requires an explicit session ID")
+            anyhow::bail!("`ercode fork --worktree` requires an explicit session ID")
         }
         Some(Subcommand::Exec(command)) => match &command.command {
             None | Some(ExecCommand::Fork(_)) => Ok(()),
             Some(ExecCommand::Resume(_)) => anyhow::bail!(
-                "`--worktree` cannot resume an existing session; use `codex exec fork --worktree`"
+                "`--worktree` cannot resume an existing session; use `ercode exec fork --worktree`"
             ),
             Some(ExecCommand::Review(_)) => {
                 anyhow::bail!("`--worktree` is not supported for code review")
@@ -2314,7 +2336,7 @@ fn reject_unsupported_worktree_for_subcommand(
         },
         _ => {
             anyhow::bail!(
-                "`--worktree` supports new interactive sessions, `codex fork`, `codex exec`, and `codex exec fork`"
+                "`--worktree` supports new interactive sessions, `ercode fork`, `ercode exec`, and `ercode exec fork`"
             )
         }
     }
@@ -2340,7 +2362,7 @@ fn reject_root_strict_config_for_subcommand(
 /// flag should be rejected after parsing.
 ///
 /// `--strict-config` is parsed on the root interactive CLI so commands like
-/// `codex --strict-config` continue to work for the TUI and for wrappers that
+/// `ercode --strict-config` continue to work for the TUI and for wrappers that
 /// forward root options into another command shape. Clap will still accept that
 /// root flag before the dispatcher knows which subcommand the user selected, so
 /// unsupported subcommands need an explicit post-parse reject path.
@@ -2409,7 +2431,7 @@ fn reject_strict_config_for_unsupported_subcommand(
     subcommand: &str,
 ) -> anyhow::Result<()> {
     if strict_config {
-        anyhow::bail!("`--strict-config` is not supported for `codex {subcommand}`");
+        anyhow::bail!("`--strict-config` is not supported for `ercode {subcommand}`");
     }
     Ok(())
 }
@@ -2501,7 +2523,7 @@ async fn run_interactive_tui(
     if interactive.no_daemon {
         if interactive.agents_overview {
             return Ok(AppExitInfo::fatal(
-                "--no-daemon cannot be used with codex agents. The agents overview requires a shared server. Use codex --no-daemon to work without it.",
+                "--no-daemon cannot be used with ercode agents. The agents overview requires a shared server. Use ercode --no-daemon to work without it.",
             ));
         }
         if remote.is_some() {
@@ -2547,7 +2569,7 @@ async fn run_interactive_tui(
         let output = codex_app_server_daemon::run(AppServerLifecycleCommand::Start)
             .await
             .map_err(|err| std::io::Error::other(format!(
-                "{err:#}\nThe agents overview requires a shared server. Use codex --no-daemon to work without it."
+                "{err:#}\nThe agents overview requires a shared server. Use ercode --no-daemon to work without it."
             )))?;
         interactive.managed_daemon = output.backend.is_some();
     }
@@ -2672,7 +2694,7 @@ fn confirm(prompt: &str) -> std::io::Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
-/// Build the final `TuiCli` for a `codex resume` invocation.
+/// Build the final `TuiCli` for a `ercode resume` invocation.
 fn finalize_resume_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -2683,7 +2705,7 @@ fn finalize_resume_interactive(
     mut resume_cli: TuiCli,
 ) -> TuiCli {
     // Start with the parsed interactive CLI so resume shares the same
-    // configuration surface area as `codex` without additional flags.
+    // configuration surface area as `ercode` without additional flags.
     // Clap assigns the first positional to `session_id`. With `--last`, reinterpret it as the
     // prompt when no second positional prompt was provided.
     let resume_session_id = if last && resume_cli.prompt.is_none() {
@@ -2707,7 +2729,7 @@ fn finalize_resume_interactive(
     interactive
 }
 
-/// Build the final `TuiCli` for a `codex fork` invocation.
+/// Build the final `TuiCli` for a `ercode fork` invocation.
 fn finalize_fork_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -2717,7 +2739,7 @@ fn finalize_fork_interactive(
     mut fork_cli: TuiCli,
 ) -> TuiCli {
     // Start with the parsed interactive CLI so fork shares the same
-    // configuration surface area as `codex` without additional flags.
+    // configuration surface area as `ercode` without additional flags.
     // Clap assigns the first positional to `session_id`. With `--last`, reinterpret it as the
     // prompt when no second positional prompt was provided.
     let fork_session_id = if last && fork_cli.prompt.is_none() {
@@ -2810,7 +2832,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
 
 fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
-    let name = "codex";
+    let name = "ercode";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 
@@ -3496,7 +3518,7 @@ enabled = true
     }
 
     fn default_app_server_socket_path() -> AbsolutePathBuf {
-        let codex_home = find_codex_home().expect("codex home");
+        let codex_home = find_codex_home().expect("ercode home");
         codex_app_server::app_server_control_socket_path(&codex_home)
             .expect("default app-server socket path")
     }
@@ -3592,15 +3614,15 @@ enabled = true
     fn plugin_marketplace_help_uses_plugin_namespace() {
         let help = help_from_args(&["codex", "plugin", "marketplace", "--help"]);
         assert!(
-            help.contains("Usage: codex plugin marketplace [OPTIONS] <COMMAND>"),
+            help.contains("Usage: ercode plugin marketplace [OPTIONS] <COMMAND>"),
             "{help}"
         );
 
         for (subcommand, usage) in [
-            ("add", "Usage: codex plugin marketplace add"),
-            ("list", "Usage: codex plugin marketplace list"),
-            ("upgrade", "Usage: codex plugin marketplace upgrade"),
-            ("remove", "Usage: codex plugin marketplace remove"),
+            ("add", "Usage: ercode plugin marketplace add"),
+            ("list", "Usage: ercode plugin marketplace list"),
+            ("upgrade", "Usage: ercode plugin marketplace upgrade"),
+            ("remove", "Usage: ercode plugin marketplace remove"),
         ] {
             let help = help_from_args(&["codex", "plugin", "marketplace", subcommand, "--help"]);
             assert!(help.contains(usage), "{help}");
@@ -3908,7 +3930,7 @@ enabled = true
                 );
                 exit_info.disconnect_info = Some(codex_tui::DisconnectInfo {
                     command: vec![
-                        "codex".to_string(),
+                        "ercode".to_string(),
                         "--remote".to_string(),
                         "wss://example.com:443/".to_string(),
                     ],
@@ -3925,8 +3947,8 @@ enabled = true
             vec![
                 "Disconnected from this task. Any running work continues.",
                 "To reconnect, run:",
-                "  codex --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN resume 123e4567-e89b-12d3-a456-426614174000",
-                "Stop the current turn: run codex --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN agents, select this task, and press ctrl + x.",
+                "  ercode --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN resume 123e4567-e89b-12d3-a456-426614174000",
+                "Stop the current turn: run ercode --remote wss://example.com:443/ --remote-auth-token-env CODEX_REMOTE_TOKEN agents, select this task, and press ctrl + x.",
                 "Token usage so far: total=2 input=0 output=2",
             ]
         );
@@ -3988,7 +4010,7 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
                 "To continue this session, run:".to_string(),
-                "  codex resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
+                "  ercode resume 123e4567-e89b-12d3-a456-426614174000".to_string(),
             ]
         );
     }
@@ -4003,7 +4025,7 @@ enabled = true
                 insta::assert_snapshot!(lines.join("\n"), @"
                 Token usage: total=2 input=0 output=2
                 To continue this session, run:
-                  codex resume 123e4567-e89b-12d3-a456-426614174000
+                  ercode resume 123e4567-e89b-12d3-a456-426614174000
                 ");
             }
         }
@@ -4021,7 +4043,7 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "  \u{1b}[36mercode resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
             ]
         );
     }
@@ -4036,8 +4058,8 @@ enabled = true
         insta::assert_snapshot!(lines.join("\n"), @"
         Token usage: total=2 input=0 output=2
         To continue this session, run:
-          codex resume 123e4567-e89b-12d3-a456-426614174000
-        Or run codex resume and select my-thread.
+          ercode resume 123e4567-e89b-12d3-a456-426614174000
+        Or run ercode resume and select my-thread.
         ");
     }
 
@@ -4053,8 +4075,8 @@ enabled = true
             vec![
                 "Token usage: total=2 input=0 output=2",
                 "To continue this session, run:",
-                "  \u{1b}[36mcodex resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
-                "Or run \u{1b}[36mcodex resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
+                "  \u{1b}[36mercode resume 123e4567-e89b-12d3-a456-426614174000\u{1b}[39m",
+                "Or run \u{1b}[36mercode resume\u{1b}[39m and select \u{1b}[36mmy-thread\u{1b}[39m.",
             ]
         );
     }
@@ -4457,7 +4479,7 @@ enabled = true
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex mcp`"
+            "`--strict-config` is not supported for `ercode mcp`"
         );
 
         let cli = MultitoolCli::try_parse_from(["codex", "--strict-config", "remote-control"])
@@ -4470,7 +4492,7 @@ enabled = true
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex remote-control`"
+            "`--strict-config` is not supported for `ercode remote-control`"
         );
     }
 
@@ -4486,7 +4508,7 @@ enabled = true
 
         assert_eq!(
             err.to_string(),
-            "`--strict-config` is not supported for `codex app-server proxy`"
+            "`--strict-config` is not supported for `ercode app-server proxy`"
         );
     }
 

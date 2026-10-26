@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Covers confirmed new tasks, existing attachment paths, and the user model picker.
 
 use super::*;
@@ -7,6 +8,46 @@ use crate::terminal_palette::with_test_default_colors;
 use crate::terminal_probe::DefaultColors;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use pretty_assertions::assert_eq;
+
+// These two picker regressions exercise server settings, never remote inference or discovery.
+// Persist the same local provider/catalog used in memory so config reloads stay isolated.
+async fn configure_local_picker_provider(
+    app: &mut App,
+    defaults: &str,
+) -> Result<(wiremock::MockServer, String)> {
+    let mock = wiremock::MockServer::start().await;
+    let provider_id = "ercode-picker-test";
+    let provider = codex_model_provider_info::ModelProviderInfo {
+        name: "ercode picker test".into(),
+        base_url: Some(format!("{}/v1", mock.uri())),
+        requires_openai_auth: false,
+        ..Default::default()
+    };
+    let mut catalog = codex_models_manager::bundled_models_response()?;
+    catalog
+        .models
+        .retain(|model| matches!(model.slug.as_str(), "gpt-5.5" | "gpt-6-astra"));
+    assert_eq!(
+        catalog.models.len(),
+        2,
+        "picker fixtures need both bundled models"
+    );
+    let catalog_path = app.config.codex_home.join("picker-models.json");
+    std::fs::write(&catalog_path, serde_json::to_vec(&catalog)?)?;
+    app.config.model_catalog = Some(catalog);
+    app.config.model_provider_id = provider_id.into();
+    app.config.model_provider = provider.clone();
+    app.config
+        .model_providers
+        .insert(provider_id.into(), provider);
+    let config_text = format!(
+        "{defaults}model_provider = '{provider_id}'\nmodel_catalog_json = {}\n\n[model_providers.{provider_id}]\nname = 'ercode picker test'\nbase_url = '{}/v1'\nrequires_openai_auth = false\n",
+        toml::Value::String(catalog_path.display().to_string()),
+        mock.uri(),
+    );
+    std::fs::write(app.config.codex_home.join("config.toml"), &config_text)?;
+    Ok((mock, config_text))
+}
 
 fn started(model: &str) -> AppServerStartedThread {
     let mut session = test_thread_session(ThreadId::new(), test_path_buf("/tmp/project"));
@@ -490,6 +531,7 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
         app.config.model = Some("gpt-5.5".into());
         app.local_settings.tui.animations = true;
         app.local_settings.tui.effects.starfield = true;
+        let (mock, _) = configure_local_picker_provider(&mut app, "model = 'gpt-5.5'\n").await?;
         let mut server = start_config_write_test_app_server(&app).await?;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let thread = server.start_thread(&app.config).await?;
@@ -560,12 +602,13 @@ async fn astra_picker_confirms_the_model_at_application_after_an_automatic_updat
             let lines = rendered.lines().collect::<Vec<_>>();
             let prompt = lines
                 .iter()
-                .position(|line| line.contains("Ask Codex to do anything"))
+                .position(|line| line.contains("Ask ercode to do anything"))
                 .expect("empty composer shows its placeholder");
             let composer = lines[prompt.saturating_sub(1)..=prompt + 1].join("\n");
             snapshots.push(format!("{picker}:\n{composer}"));
         }
         server.shutdown().await?;
+        assert!(mock.received_requests().await.unwrap().is_empty());
     }
     insta::assert_snapshot!(snapshots.join("\n\n"));
     Ok(())
@@ -652,8 +695,11 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
     app.local_settings.tui.effects.starfield = true;
     app.local_settings.tui.disable_paste_burst = Some(true);
     let config_path = app.config.codex_home.join("config.toml");
-    let defaults = "model = 'gpt-5.5'\nmodel_reasoning_effort = 'medium'\n";
-    std::fs::write(&config_path, defaults)?;
+    let (mock, defaults) = configure_local_picker_provider(
+        &mut app,
+        "model = 'gpt-5.5'\nmodel_reasoning_effort = 'medium'\n",
+    )
+    .await?;
     let mut server = start_config_write_test_app_server(&app).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let mut snapshots = Vec::new();
@@ -694,7 +740,7 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
         let lines = rendered.lines().collect::<Vec<_>>();
         let prompt = lines
             .iter()
-            .position(|line| line.contains("Ask Codex to do anything"))
+            .position(|line| line.contains("Ask ercode to do anything"))
             .expect("empty composer shows its placeholder");
         let composer = lines[prompt.saturating_sub(1)..=prompt + 1].join("\n");
         assert_eq!(
@@ -730,6 +776,7 @@ async fn session_only_astra_picker_shows_stars_only_on_an_untouched_task() -> Re
 
     insta::assert_snapshot!(snapshots.join("\n\n"));
     server.shutdown().await?;
+    assert!(mock.received_requests().await.unwrap().is_empty());
     Ok(())
 }
 

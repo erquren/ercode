@@ -2,14 +2,12 @@
 source: tui/src/onboarding/auth.rs
 expression: terminal.backend().to_string()
 ---
-> Use your own OpenAI API key for usage-based billing
+First-run API setup for ercode
+Already signed in? Sign out before changing your endpoint.
+Responses API compatibility is required (not Chat Completions).
+Include the API prefix, such as /v1. HTTPS or trusted LAN HTTP.
 
-  Paste or type your API key below.
+API Base URL · 1/3
+https://api.openai.com/v1
 
-
-
-╭API key───────────────────────────────────────────────────────────────────────╮
-│Paste or type your API key                                                    │
-╰──────────────────────────────────────────────────────────────────────────────╯
-  Press enter to save
-  Press esc to go back
+Enter continue/save · Esc back · Ctrl+C quit

@@ -1,3 +1,4 @@
+// ercode fork: explicitly scoped doctor subprocesses must not inherit another home.
 //! Builds a redacted doctor report attachment for feedback uploads.
 //!
 //! Feedback upload should never depend on doctor succeeding. This module runs
@@ -114,7 +115,8 @@ fn doctor_command(executable: &Path, cwd: &Path, codex_home: &Path) -> Command {
         .arg("--json")
         .arg("--feedback")
         .current_dir(codex_home)
-        .env("CODEX_HOME", codex_home);
+        .env("CODEX_HOME", codex_home)
+        .env("ERCODE_HOME", codex_home);
     command
 }
 
@@ -220,7 +222,10 @@ mod tests {
         );
         assert_eq!(
             command.get_envs().collect::<Vec<_>>(),
-            [("CODEX_HOME".as_ref(), Some(codex_home.path().as_os_str()))]
+            [
+                ("CODEX_HOME".as_ref(), Some(codex_home.path().as_os_str())),
+                ("ERCODE_HOME".as_ref(), Some(codex_home.path().as_os_str())),
+            ]
         );
     }
 

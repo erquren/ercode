@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Slash-command input parsing, cursor detection, and completion helpers.
 
 use std::ops::Range;
@@ -625,7 +626,7 @@ mod tests {
             /*has_input_focus*/ true,
             AppEventSender::new(tx),
             /*enhanced_keys_supported*/ false,
-            "Ask Codex to do anything".to_string(),
+            "Ask ercode to do anything".to_string(),
             /*disable_paste_burst*/ false,
         )
     }
