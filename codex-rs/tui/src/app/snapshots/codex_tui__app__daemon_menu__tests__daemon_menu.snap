@@ -1,13 +1,14 @@
 ---
 source: tui/src/app/daemon_menu_tests.rs
-expression: "render_bottom_popup(&app.chat_widget, 80)"
+expression: menu
 ---
   Daemon
   Running daemon: v0.153.0
 
 
-› 1. Install latest public stable
-  2. Use this CLI build
-  3. Restart background server
+     Install latest public stable (disabled)  Disabled for ercode: would install
+                                              upstream Codex
+› 1. Use this CLI build
+  2. Restart background server
 
   enter select · esc back

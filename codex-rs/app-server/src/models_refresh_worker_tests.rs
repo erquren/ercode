@@ -375,3 +375,54 @@ async fn catalog_reload_recovers_original_project_after_startup_fallback() -> an
     );
     Ok(())
 }
+
+// ercode regression: no HTTP transport exists in this fixture; the endpoint is an in-memory spy.
+#[tokio::test]
+async fn api_setup_suspension_prevents_new_key_from_reaching_old_catalog_endpoint()
+-> anyhow::Result<()> {
+    let home = tempdir()?;
+    let config_manager = crate::config_manager::ConfigManager::new_for_tests(
+        home.path().to_path_buf(),
+        vec![("model_provider".into(), "ollama".into())],
+        LoaderOverrides::without_managed_config_for_tests(),
+        CloudConfigBundleLoader::default(),
+    );
+    let config = Arc::new(config_manager.load_non_project_config().await?);
+    let auth = codex_login::AuthManager::shared_from_config(config.as_ref(), false).await?;
+    let endpoint = TestModelsEndpoint::new();
+    let models: SharedModelsManager = Arc::new(OpenAiModelsManager::new(
+        home.path().to_path_buf(),
+        endpoint.clone(),
+        Some(Arc::clone(&auth)),
+    ));
+    let catalog = ModelCatalog::new(
+        config_manager,
+        None,
+        Arc::clone(&config),
+        models,
+        Arc::clone(&auth),
+    );
+    // Prove the spy would be contacted without suspension.
+    catalog.list_models(RefreshStrategy::Online).await?;
+    assert_eq!(endpoint.fetch_count.load(Ordering::SeqCst), 1);
+    catalog.suspend_remote_refresh_for_api_setup().await;
+    codex_login::login_with_api_key(
+        home.path(),
+        "ercode-synthetic-credential",
+        config.cli_auth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
+    )?;
+    auth.reload().await;
+    assert!(
+        auth.auth_cached()
+            .is_some_and(|auth| auth.is_api_key_auth())
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        catalog.list_models(RefreshStrategy::Online).await?;
+        catalog.list_models(RefreshStrategy::OnlineIfUncached).await
+    })
+    .await
+    .expect("suspended refresh must not reach the blocking endpoint")?;
+    assert_eq!(endpoint.fetch_count.load(Ordering::SeqCst), 1);
+    Ok(())
+}

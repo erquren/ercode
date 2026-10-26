@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Startup handoff preserves the loading frame until replayed cells can replace it.
 
 use super::*;
@@ -159,7 +160,7 @@ async fn owned_startup_preserves_loading_until_resume_replay_is_applied() -> Res
         if has_answer {
             assert!(rendered.contains("Retained answer after resume."));
         } else {
-            assert!(rendered.contains("OpenAI Codex"));
+            assert!(rendered.contains("ercode"));
         }
         tui.set_owned_screen(/*owned*/ false)?;
         app_server.shutdown().await?;

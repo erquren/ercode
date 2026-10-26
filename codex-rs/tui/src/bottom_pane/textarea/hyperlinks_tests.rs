@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 use super::super::TextArea;
 use super::super::TextAreaState;
 use crate::app_event::AppEvent;
@@ -119,7 +120,7 @@ fn composer_wrapped_url_fragments_keep_the_complete_destination() {
         /*has_input_focus*/ true,
         AppEventSender::new(sender),
         /*enhanced_keys_supported*/ true,
-        "Ask Codex to do anything".to_string(),
+        "Ask ercode to do anything".to_string(),
         /*disable_paste_burst*/ false,
     );
     composer.set_text_content(format!("Fix CI on {url}"), Vec::new(), Vec::new());

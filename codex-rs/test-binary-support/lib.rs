@@ -1,3 +1,4 @@
+// Modified for ercode: isolate arg0 test aliases from either home override.
 use std::path::Path;
 
 use codex_arg0::Arg0DispatchPaths;
@@ -49,9 +50,11 @@ where
                 Err(error) => panic!("failed to create test CODEX_HOME: {error}"),
             };
             let previous_codex_home = std::env::var_os("CODEX_HOME");
+            let previous_ercode_home = std::env::var_os("ERCODE_HOME");
             // Safety: this runs from a test ctor before test threads begin.
             unsafe {
                 std::env::set_var("CODEX_HOME", codex_home.path());
+                std::env::set_var("ERCODE_HOME", codex_home.path());
             }
 
             let arg0 = match arg0_dispatch() {
@@ -64,6 +67,15 @@ where
                 },
                 None => unsafe {
                     std::env::remove_var("CODEX_HOME");
+                },
+            }
+
+            match previous_ercode_home.as_ref() {
+                Some(value) => unsafe {
+                    std::env::set_var("ERCODE_HOME", value);
+                },
+                None => unsafe {
+                    std::env::remove_var("ERCODE_HOME");
                 },
             }
 

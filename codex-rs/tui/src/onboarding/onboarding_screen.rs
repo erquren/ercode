@@ -1,3 +1,4 @@
+// Modified for ercode: first-run setup defaults to an explicit API endpoint and key.
 //! Onboarding screen orchestration and top-level keyboard routing.
 //!
 //! The onboarding flow is a small state machine over visible steps
@@ -7,7 +8,7 @@
 //!
 //! In particular, onboarding quit handling has a text-entry guard for API-key
 //! input: the printable `q` quit key is treated as text input while the user is
-//! editing a non-empty API-key field, while control/alt chords remain available
+//! editing any API setup field, while control/alt chords remain available
 //! as explicit exit shortcuts.
 
 use codex_app_server_client::AppServerEvent;
@@ -42,6 +43,7 @@ use crate::config_update::write_trusted_project;
 use crate::empty_state_animation::Presentation;
 use crate::key_hint::KeyBindingListExt;
 use crate::legacy_core::config::Config;
+use crate::onboarding::auth::ApiKeyInputState;
 use crate::onboarding::auth::AuthModeWidget;
 use crate::onboarding::auth::SignInOption;
 use crate::onboarding::auth::SignInState;
@@ -167,18 +169,23 @@ impl OnboardingScreen {
         #[cfg(not(target_os = "windows"))]
         let show_windows_create_sandbox_hint = false;
         if show_login_screen {
-            let highlighted_mode =
-                if auth_config.is_login_method_allowed(ForcedLoginMethod::Chatgpt) {
-                    SignInOption::ChatGpt
-                } else {
-                    SignInOption::ApiKey
-                };
+            let highlighted_mode = if auth_config.is_login_method_allowed(ForcedLoginMethod::Api) {
+                SignInOption::ApiKey
+            } else {
+                SignInOption::ChatGpt
+            };
             if let Some(app_server_request_handle) = app_server_request_handle {
                 steps.push(Step::Auth(AuthModeWidget {
                     request_frame: tui.frame_requester(),
                     highlighted_mode,
                     error: Arc::new(RwLock::new(None)),
-                    sign_in_state: Arc::new(RwLock::new(SignInState::PickMode)),
+                    sign_in_state: Arc::new(RwLock::new(
+                        if highlighted_mode == SignInOption::ApiKey {
+                            SignInState::ApiKeyEntry(ApiKeyInputState::for_config(&config))
+                        } else {
+                            SignInState::PickMode
+                        },
+                    )),
                     login_status,
                     app_server_target,
                     app_server_request_handle,
@@ -345,8 +352,8 @@ impl OnboardingScreen {
 impl KeyboardHandler for OnboardingScreen {
     /// Route key events to onboarding steps while preserving text-entry safety.
     ///
-    /// OpenAI API-key entry suppresses printable quit bindings after typing
-    /// starts, while Bedrock fields suppress them from the first character.
+    /// API setup and Bedrock fields suppress printable quit bindings from the
+    /// first character, even when the field is empty.
     /// Control/alt quit chords still work as emergency exits.
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         if !matches!(key_event.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
@@ -917,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn does_not_suppress_printable_quit_key_when_api_key_input_is_empty() {
+    fn does_not_suppress_printable_quit_when_context_does_not_request_it() {
         let suppressed = suppress_quit_while_typing(
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
             TextEntryContext {

@@ -4,7 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
-default-run = "codex"
+default-run = "ercode"
+
+# Modified for ercode: add a branded entrypoint; retain the internal compatibility binary.
+[[bin]]
+name = "ercode"
+path = "src/ercode.rs"
+test = false
 
 [[bin]]
 name = "codex"

@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 use super::*;
 use crate::app::test_support::make_test_app;
 use crate::chatwidget::tests::helpers::render_bottom_popup;
@@ -27,7 +28,7 @@ async fn daemon_version_notice_preserves_manual_update_guidance() {
         assert_eq!(
             app.initialize_server_version_notice(client, Some(server)),
             Some(format!(
-                "A background Codex service is running v{server}, {comparison} your Codex CLI v{client}."
+                "A background Codex service is running v{server}, {comparison} your ercode CLI v{client}."
             ))
         );
         let overview = render_bottom_popup(&app.chat_widget, /*width*/ 100);
@@ -56,9 +57,9 @@ async fn daemon_version_notice_preserves_manual_update_guidance() {
         );
     }
     insta::assert_snapshot!(notices.join("\n"), @"
-    Service v0.155.0-alpha.22 < Codex CLI v0.155.0-alpha.23 · /daemon
-    Service v0.156.0 ≠ Codex CLI v0.155.0-alpha.23 · /daemon
-    Service v0.156.0 ≠ Codex CLI v0.0.0 · /daemon
+    Service v0.155.0-alpha.22 < ercode CLI v0.155.0-alpha.23 · /daemon
+    Service v0.156.0 ≠ ercode CLI v0.155.0-alpha.23 · /daemon
+    Service v0.156.0 ≠ ercode CLI v0.0.0 · /daemon
     ");
 }
 
@@ -89,26 +90,23 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
     let view = app.agents_overview_view(Vec::new(), /*selected_thread_id*/ None);
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     let overview = render_bottom_popup(&app.chat_widget, /*width*/ 80);
-    insta::assert_snapshot!(overview.lines().find(|line| line.contains("Service v")).unwrap().trim(), @"Service v0.153.0 < Codex CLI v0.154.0 · /daemon");
+    insta::assert_snapshot!(overview.lines().find(|line| line.contains("Service v")).unwrap().trim(), @"Service v0.153.0 < ercode CLI v0.154.0 · /daemon");
     let executable = app.daemon_cli_executable.clone();
-    for (width, source, snapshot) in [
-        (
-            80,
-            DaemonUpdateSource::PublicStable,
-            "daemon_stable_confirmation",
-        ),
-        (100, DaemonUpdateSource::ThisCli, "daemon_cli_confirmation"),
-    ] {
+    for (width, source, snapshot) in [(100, DaemonUpdateSource::ThisCli, "daemon_cli_confirmation")]
+    {
         app.daemon_cli_executable = executable.clone();
         app.open_daemon_menu();
-        if source == DaemonUpdateSource::PublicStable {
-            insta::assert_snapshot!(
-                "daemon_menu",
-                render_bottom_popup(&app.chat_widget, /*width*/ 80)
-            );
-        } else {
-            app.chat_widget.handle_key_event(KeyCode::Down.into());
-        }
+        let menu = render_bottom_popup(&app.chat_widget, /*width*/ 80);
+        assert!(
+            menu.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("Disabled for ercode: would install upstream Codex")
+        );
+        insta::assert_snapshot!("daemon_menu", menu);
+        // A stale event cannot bypass the disabled public-stable row.
+        app.confirm_daemon_update(DaemonUpdateSource::PublicStable);
+        assert_eq!(render_bottom_popup(&app.chat_widget, 80), menu);
         assert!(rx.try_recv().is_err());
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         assert!(
@@ -159,7 +157,6 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
                 .unwrap()
         },
     );
-    app.chat_widget.handle_key_event(KeyCode::Down.into());
     app.chat_widget.handle_key_event(KeyCode::Down.into());
     app.chat_widget.handle_key_event(KeyCode::Enter.into());
     assert!(matches!(
@@ -238,19 +235,12 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
     app.app_server_target = AppServerTarget::Embedded;
     app.chat_widget.remote_connection = None;
     app.daemon_cli_executable = executable;
-    for source in [
-        DaemonUpdateSource::PublicStable,
-        DaemonUpdateSource::ThisCli,
-    ] {
+    for source in [DaemonUpdateSource::ThisCli] {
         app.open_daemon_menu();
-        if source == DaemonUpdateSource::PublicStable {
-            insta::assert_snapshot!(
-                "daemon_disconnected",
-                render_bottom_popup(&app.chat_widget, /*width*/ 80)
-            );
-        } else {
-            app.chat_widget.handle_key_event(KeyCode::Down.into());
-        }
+        insta::assert_snapshot!(
+            "daemon_disconnected",
+            render_bottom_popup(&app.chat_widget, /*width*/ 80)
+        );
         assert!(rx.try_recv().is_err());
         app.chat_widget.handle_key_event(KeyCode::Enter.into());
         assert!(
@@ -278,10 +268,7 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
         render_bottom_popup(&app.chat_widget, /*width*/ 80)
     );
     app.chat_widget.handle_key_event(KeyCode::Enter.into());
-    assert!(matches!(
-        rx.try_recv().unwrap(),
-        AppEvent::ConfirmDaemonUpdate(DaemonUpdateSource::PublicStable)
-    ));
+    assert!(rx.try_recv().is_err());
 
     app.daemon_cli_executable = None;
     app.open_daemon_menu();

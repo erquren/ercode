@@ -1,3 +1,4 @@
+// Modified for ercode: document the isolated configuration-home resolver.
 use crate::config::edit::ConfigEdit;
 use crate::config::edit::ConfigEditsBuilder;
 use crate::context::world_state::validate_managed_developer_instructions;
@@ -5191,14 +5192,9 @@ fn normalize_guardian_policy_config(value: Option<&str>) -> Option<String> {
     })
 }
 
-/// Returns the path to the Codex configuration directory, which can be
-/// specified by the `CODEX_HOME` environment variable. If not set, defaults to
-/// `~/.codex`.
-///
-/// - If `CODEX_HOME` is set, the value must exist and be a directory. The
-///   value will be canonicalized and this function will Err otherwise.
-/// - If `CODEX_HOME` is not set, this function does not verify that the
-///   directory exists.
+/// Returns the ercode configuration directory: `ERCODE_HOME`, then explicit
+/// compatibility `CODEX_HOME`, then `~/.ercode`. Explicit overrides must exist
+/// and be directories. The default path need not exist; old data is not migrated.
 pub fn find_codex_home() -> std::io::Result<AbsolutePathBuf> {
     codex_utils_home_dir::find_codex_home()
 }

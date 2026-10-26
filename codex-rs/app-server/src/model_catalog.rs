@@ -1,3 +1,4 @@
+// Modified for ercode: serialize and suspend remote catalog access during local API setup.
 //! Loads the model catalog for the current effective provider configuration.
 
 use std::path::PathBuf;
@@ -20,6 +21,19 @@ pub(crate) struct ModelCatalog {
     auth_manager: Arc<AuthManager>,
     startup_cwd: Option<PathBuf>,
     state: Mutex<CatalogState>,
+    remote_refresh: RemoteRefreshGate,
+}
+
+#[derive(Default)]
+struct RemoteRefreshGate {
+    suspended: Mutex<bool>,
+}
+
+impl RemoteRefreshGate {
+    async fn suspend(&self) {
+        // All catalog fetches hold this lock until their request completes.
+        *self.suspended.lock().await = true;
+    }
 }
 
 struct CatalogState {
@@ -40,12 +54,19 @@ impl ModelCatalog {
             config_manager,
             auth_manager,
             startup_cwd,
+            remote_refresh: RemoteRefreshGate::default(),
             state: Mutex::new(CatalogState {
                 needs_reload: false,
                 config,
                 models_manager,
             }),
         }
+    }
+
+    /// Local API setup must drain old-route requests before config or credentials change.
+    /// Keep remote discovery suspended for this process; onboarding also persists it disabled.
+    pub(crate) async fn suspend_remote_refresh_for_api_setup(&self) {
+        self.remote_refresh.suspend().await;
     }
 
     /// Marks catalog configuration stale after an account transition.
@@ -110,6 +131,13 @@ impl ModelCatalog {
         models_manager: SharedModelsManager,
         refresh_strategy: RefreshStrategy,
     ) -> std::io::Result<Vec<ModelPreset>> {
+        let remote_refresh = self.remote_refresh.suspended.lock().await;
+        let refresh_strategy = if *remote_refresh {
+            RefreshStrategy::Offline
+        } else {
+            refresh_strategy
+        };
+        // Retain the guard through the awaited fetch so suspension drains in-flight work.
         // Keep the existing policy check even for a warm catalog. A policy
         // edit alone must not make the retained provider silently permissible.
         self.config_manager
@@ -118,5 +146,28 @@ impl ModelCatalog {
         Ok(models_manager
             .list_models(refresh_strategy, config.http_client_factory())
             .await)
+    }
+}
+
+#[cfg(test)]
+mod ercode_tests {
+    use super::RemoteRefreshGate;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn api_setup_gate_drains_inflight_requests_before_suspending() {
+        let gate = Arc::new(RemoteRefreshGate::default());
+        let active_request = gate.suspended.lock().await;
+        let pending_gate = Arc::clone(&gate);
+        let mut suspension = tokio::spawn(async move { pending_gate.suspend().await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut suspension)
+                .await
+                .is_err()
+        );
+        drop(active_request);
+        suspension.await.unwrap();
+        assert!(*gate.suspended.lock().await);
     }
 }

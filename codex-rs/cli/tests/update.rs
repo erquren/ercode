@@ -1,3 +1,4 @@
+// Modified for ercode: both debug and release must refuse upstream self-updates.
 use anyhow::Result;
 use predicates::str::contains;
 use std::path::Path;
@@ -9,7 +10,6 @@ fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     Ok(cmd)
 }
 
-#[cfg(debug_assertions)]
 #[tokio::test]
 async fn update_does_not_start_interactive_prompt() -> Result<()> {
     let codex_home = TempDir::new()?;
@@ -18,7 +18,7 @@ async fn update_does_not_start_interactive_prompt() -> Result<()> {
         .arg("update")
         .assert()
         .failure()
-        .stderr(contains("`codex update` is not available in debug builds"));
+        .stderr(contains("ercode does not use the official Codex updater"));
 
     Ok(())
 }

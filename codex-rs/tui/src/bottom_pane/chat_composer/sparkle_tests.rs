@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Covers the original starfield appearance, protected content, and composer eligibility.
 
 use super::super::LARGE_PASTE_CHAR_THRESHOLD;
@@ -24,7 +25,7 @@ fn pane() -> BottomPane {
         frame_requester: FrameRequester::test_dummy(),
         has_input_focus: true,
         enhanced_keys_supported: false,
-        placeholder_text: "Ask Codex to do anything".into(),
+        placeholder_text: "Ask ercode to do anything".into(),
         disable_paste_burst: true,
         animations_enabled: true,
         effects: Default::default(),

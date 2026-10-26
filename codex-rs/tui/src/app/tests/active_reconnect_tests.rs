@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Active recovery keeps local input and policy while reusing ordinary thread resume.
 
 use super::*;
@@ -422,7 +423,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             .join("\n");
         if deferred_notice {
             assert_snapshot!(notices, @r###"
-⚠ A background Codex service is running v2.0.0, older than your Codex CLI
+⚠ A background Codex service is running v2.0.0, older than your ercode CLI
 "###);
         } else if edit_offline {
             assert!(notices.contains("unacknowledged prompt"));

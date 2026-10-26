@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Session information appears only once all older transcript pages are available.
 
 use super::*;
@@ -105,4 +106,13 @@ fn session_information_waits_for_older_pages_and_reappears_after_completion() {
             "session announcement"
         ]
     );
+}
+
+#[test]
+fn ercode_title_uses_fork_brand_and_keeps_version() {
+    let text: String = codex_title("1.2.3")
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect();
+    assert_eq!(text, ">_ ercode (v1.2.3)");
 }

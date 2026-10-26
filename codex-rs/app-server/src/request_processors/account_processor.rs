@@ -1,3 +1,4 @@
+// Modified for ercode: API-key setup saves locally without plugin network refresh.
 use super::bedrock_auth::BedrockProviderConfig;
 use super::bedrock_auth::clear_user_model_provider_if_bedrock;
 use super::bedrock_auth::configure_bedrock_provider;
@@ -484,6 +485,9 @@ impl AccountRequestProcessor {
     }
 
     async fn login_api_key_v2(&self, request_id: ConnectionRequestId, params: LoginApiKeyParams) {
+        self.model_catalog
+            .suspend_remote_refresh_for_api_setup()
+            .await;
         let result = self
             .login_api_key_common(&params)
             .await
@@ -945,7 +949,11 @@ impl AccountRequestProcessor {
             payload.success = false;
             payload.error = Some(error.to_string());
         }
-        if payload.success && auth_changes.borrow().owner_generation == owner_generation {
+        // API-key onboarding is a local save, not permission to contact plugin services.
+        if payload.success
+            && auth_changes.borrow().owner_generation == owner_generation
+            && login_allows_remote_plugin_refresh(self.auth_manager.auth_cached().as_ref())
+        {
             Self::maybe_refresh_plugin_caches_for_current_config(
                 &self.config_manager,
                 &self.thread_manager,
@@ -1609,6 +1617,10 @@ pub(crate) async fn clear_account_configuration(
     Ok(())
 }
 
+fn login_allows_remote_plugin_refresh(auth: Option<&CodexAuth>) -> bool {
+    !auth.is_some_and(CodexAuth::is_api_key_auth)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1616,6 +1628,12 @@ mod tests {
     use codex_backend_client::TokenUsageProfileStats;
     use http::StatusCode;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn api_key_setup_does_not_refresh_remote_plugin_services() {
+        let auth = CodexAuth::from_api_key("synthetic-test-key");
+        assert!(!login_allows_remote_plugin_refresh(Some(&auth)));
+    }
 
     #[test]
     fn account_token_usage_response_maps_profile_stats_and_daily_buckets() {

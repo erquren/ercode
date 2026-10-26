@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 use super::*;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
@@ -209,7 +210,7 @@ async fn mapped_shift_enter_renders_newlines_in_the_composer() {
         /*has_input_focus*/ true,
         AppEventSender::new(tx),
         /*enhanced_keys_supported*/ false,
-        "Ask Codex to do anything".to_string(),
+        "Ask ercode to do anything".to_string(),
         /*disable_paste_burst*/ true,
     );
     for event in decoded(keys("first line\u{1b}[13;2u\u{1b}[13;2usecond line [13;2u")).await {

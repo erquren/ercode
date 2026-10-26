@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 //! Keeps the server version notice and local maintenance guidance in the overview.
 
 use super::*;
@@ -61,7 +62,7 @@ impl App {
                     ServerVersionNoticeKind::Different => "≠",
                 };
             Some(format!(
-                "Service v{server} {comparison} Codex CLI v{client_version}{guidance}"
+                "Service v{server} {comparison} ercode CLI v{client_version}{guidance}"
             ))
         });
     }

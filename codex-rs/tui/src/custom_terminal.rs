@@ -1,3 +1,4 @@
+// Modified for ercode: command-line product branding; upstream interfaces are unchanged.
 // This is derived from `ratatui::Terminal`, which is licensed under the following terms:
 //
 // The MIT License (MIT)
@@ -1126,7 +1127,7 @@ mod tests {
                         Line::from(vec![
                             "›".bold(),
                             " ".into(),
-                            "Ask Codex to do anything".dim(),
+                            "Ask ercode to do anything".dim(),
                         ]),
                     ])
                     .render(frame.area(), frame.buffer_mut());
@@ -1149,7 +1150,7 @@ mod tests {
 
 
 
-        › Ask Codex to do anything
+        › Ask ercode to do anything
         ");
     }
 

@@ -1,3 +1,4 @@
+// Modified for ercode: API-first setup and masked credential input.
 //! Authentication step UI and state transitions used by onboarding.
 //!
 //! This module owns the auth-step state machine (ChatGPT login/device-code/API
@@ -16,15 +17,12 @@ use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_login::AuthConfig;
-use codex_login::read_openai_api_key_from_env;
 use codex_protocol::auth::AuthMode;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Constraint;
-use ratatui::layout::Layout;
 use ratatui::layout::Rect;
 use ratatui::prelude::Widget;
 use ratatui::style::Color;
@@ -32,9 +30,6 @@ use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
-use ratatui::widgets::Block;
-use ratatui::widgets::BorderType;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
@@ -77,6 +72,7 @@ pub(crate) fn mark_underlined_hyperlink(buf: &mut Buffer, area: Rect, url: &str)
 
 use super::onboarding_screen::StepState;
 
+mod api_setup;
 mod headless_chatgpt_login;
 
 #[derive(Clone)]
@@ -120,10 +116,24 @@ pub(super) async fn cancel_login_attempt(
         .await;
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ApiSetupField {
+    #[default]
+    BaseUrl,
+    HttpConsent,
+    Model,
+    Key,
+}
+
+#[derive(Clone)]
 pub(crate) struct ApiKeyInputState {
+    base_url: String,
+    http_consent: String,
+    consented_endpoint: Option<String>,
+    model: String,
     value: String,
-    prepopulated_from_env: bool,
+    field: ApiSetupField,
+    saving: bool,
 }
 
 #[derive(Clone)]
@@ -321,11 +331,11 @@ impl AuthModeWidget {
 
     /// Returns whether printable quit shortcuts must be treated as text input.
     ///
-    /// OpenAI API-key entry keeps its existing empty-field quit behavior, while
-    /// Bedrock fields accept printable input from their first character.
+    /// API setup and Bedrock fields accept printable input from their first character;
+    /// an initial `q` can be part of a model ID or secret, never an implicit quit.
     pub(crate) fn should_suppress_printable_quit(&self) -> bool {
         self.sign_in_state.read().is_ok_and(|guard| match &*guard {
-            SignInState::ApiKeyEntry(state) => !state.value.is_empty(),
+            SignInState::ApiKeyEntry(_) => true,
             SignInState::Bedrock(state) => state.is_text_entry_active(),
             _ => false,
         })
@@ -676,247 +686,6 @@ impl AuthModeWidget {
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .render(area, buf);
-    }
-
-    fn render_api_key_configured(&self, area: Rect, buf: &mut Buffer) {
-        let lines = vec![
-            "✓ API key configured".fg(Color::Green).into(),
-            "".into(),
-            "  Codex will use usage-based billing with your API key.".into(),
-        ];
-
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .render(area, buf);
-    }
-
-    fn render_api_key_entry(&self, area: Rect, buf: &mut Buffer, state: &ApiKeyInputState) {
-        let [intro_area, input_area, footer_area] = Layout::vertical([
-            Constraint::Min(4),
-            Constraint::Length(3),
-            Constraint::Min(2),
-        ])
-        .areas(area);
-
-        let mut intro_lines: Vec<Line> = vec![
-            Line::from(vec![
-                "> ".into(),
-                "Use your own OpenAI API key for usage-based billing".bold(),
-            ]),
-            "".into(),
-            "  Paste or type your API key below.".into(),
-            "".into(),
-        ];
-        if state.prepopulated_from_env {
-            intro_lines.push("  Detected OPENAI_API_KEY environment variable.".into());
-            intro_lines.push(
-                "  Paste a different key if you prefer to use another account."
-                    .dim()
-                    .into(),
-            );
-            intro_lines.push("".into());
-        }
-        Paragraph::new(intro_lines)
-            .wrap(Wrap { trim: false })
-            .render(intro_area, buf);
-
-        let content_line: Line = if state.value.is_empty() {
-            vec!["Paste or type your API key".dim()].into()
-        } else {
-            Line::from(state.value.clone())
-        };
-        Paragraph::new(content_line)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .title("API key")
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Cyan)),
-            )
-            .render(input_area, buf);
-
-        let mut footer_lines: Vec<Line> = vec![
-            Line::from(vec![
-                "  Press ".dim(),
-                self.confirm_binding().into(),
-                " to save".dim(),
-            ]),
-            Line::from(vec![
-                "  Press ".dim(),
-                self.cancel_binding().into(),
-                " to go back".dim(),
-            ]),
-        ];
-        if let Some(error) = self.error_message() {
-            footer_lines.push("".into());
-            footer_lines.push(error.red().into());
-        }
-        Paragraph::new(footer_lines)
-            .wrap(Wrap { trim: false })
-            .render(footer_area, buf);
-    }
-
-    fn handle_api_key_entry_key_event(&mut self, key_event: &KeyEvent) -> bool {
-        let mut should_save: Option<String> = None;
-        let mut should_request_frame = false;
-
-        {
-            let mut guard = self.sign_in_state.write().unwrap();
-            if let SignInState::ApiKeyEntry(state) = &mut *guard {
-                if keys::CANCEL.is_pressed(*key_event) {
-                    *guard = SignInState::PickMode;
-                    self.set_error(/*message*/ None);
-                    should_request_frame = true;
-                } else if keys::CONFIRM.is_pressed(*key_event) {
-                    let trimmed = state.value.trim().to_string();
-                    if trimmed.is_empty() {
-                        self.set_error(Some("API key cannot be empty".to_string()));
-                        should_request_frame = true;
-                    } else {
-                        should_save = Some(trimmed);
-                    }
-                } else {
-                    match key_event.code {
-                        KeyCode::Backspace => {
-                            if state.prepopulated_from_env {
-                                state.value.clear();
-                                state.prepopulated_from_env = false;
-                            } else {
-                                state.value.pop();
-                            }
-                            self.set_error(/*message*/ None);
-                            should_request_frame = true;
-                        }
-                        KeyCode::Char(c)
-                            if key_event.kind == KeyEventKind::Press
-                                && !key_event.modifiers.contains(KeyModifiers::SUPER)
-                                && !key_event.modifiers.contains(KeyModifiers::CONTROL)
-                                && !key_event.modifiers.contains(KeyModifiers::ALT) =>
-                        {
-                            if state.prepopulated_from_env {
-                                state.value.clear();
-                                state.prepopulated_from_env = false;
-                            }
-                            state.value.push(c);
-                            self.set_error(/*message*/ None);
-                            should_request_frame = true;
-                        }
-                        _ => {}
-                    }
-                }
-                // handled; let guard drop before potential save
-            } else {
-                return false;
-            }
-        }
-
-        if let Some(api_key) = should_save {
-            self.save_api_key(api_key);
-        } else if should_request_frame {
-            self.request_frame.schedule_frame();
-        }
-        true
-    }
-
-    fn handle_api_key_entry_paste(&mut self, pasted: String) -> bool {
-        let trimmed = pasted.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-
-        let mut guard = self.sign_in_state.write().unwrap();
-        if let SignInState::ApiKeyEntry(state) = &mut *guard {
-            if state.prepopulated_from_env {
-                state.value = trimmed.to_string();
-                state.prepopulated_from_env = false;
-            } else {
-                state.value.push_str(trimmed);
-            }
-            self.set_error(/*message*/ None);
-        } else {
-            return false;
-        }
-
-        drop(guard);
-        self.request_frame.schedule_frame();
-        true
-    }
-
-    fn start_api_key_entry(&mut self) {
-        if !self.is_api_login_allowed() {
-            self.disallow_api_login();
-            return;
-        }
-        self.set_error(/*message*/ None);
-        let prefill_from_env = read_openai_api_key_from_env();
-        let mut guard = self.sign_in_state.write().unwrap();
-        match &mut *guard {
-            SignInState::ApiKeyEntry(state) => {
-                if state.value.is_empty() {
-                    if let Some(prefill) = prefill_from_env {
-                        state.value = prefill;
-                        state.prepopulated_from_env = true;
-                    } else {
-                        state.prepopulated_from_env = false;
-                    }
-                }
-            }
-            _ => {
-                *guard = SignInState::ApiKeyEntry(ApiKeyInputState {
-                    value: prefill_from_env.clone().unwrap_or_default(),
-                    prepopulated_from_env: prefill_from_env.is_some(),
-                });
-            }
-        }
-        drop(guard);
-        self.request_frame.schedule_frame();
-    }
-
-    fn save_api_key(&mut self, api_key: String) {
-        if !self.is_api_login_allowed() {
-            self.disallow_api_login();
-            return;
-        }
-        self.set_error(/*message*/ None);
-        let request_handle = self.app_server_request_handle.clone();
-        let sign_in_state = self.sign_in_state.clone();
-        let error = self.error.clone();
-        let request_frame = self.request_frame.clone();
-        tokio::spawn(async move {
-            match request_handle
-                .request_typed::<LoginAccountResponse>(ClientRequest::LoginAccount {
-                    request_id: onboarding_request_id(),
-                    params: LoginAccountParams::ApiKey {
-                        api_key: api_key.clone(),
-                    },
-                })
-                .await
-            {
-                Ok(LoginAccountResponse::ApiKey {}) => {
-                    *error.write().unwrap() = None;
-                    *sign_in_state.write().unwrap() = SignInState::ApiKeyConfigured;
-                }
-                Ok(other) => {
-                    *error.write().unwrap() = Some(format!(
-                        "Unexpected account/login/start response: {other:?}"
-                    ));
-                    *sign_in_state.write().unwrap() = SignInState::ApiKeyEntry(ApiKeyInputState {
-                        value: api_key,
-                        prepopulated_from_env: false,
-                    });
-                }
-                Err(err) => {
-                    *error.write().unwrap() = Some(format!("Failed to save API key: {err}"));
-                    *sign_in_state.write().unwrap() = SignInState::ApiKeyEntry(ApiKeyInputState {
-                        value: api_key,
-                        prepopulated_from_env: false,
-                    });
-                }
-            }
-            request_frame.schedule_frame();
-        });
-        self.request_frame.schedule_frame();
     }
 
     fn handle_existing_chatgpt_login(&mut self) -> bool {
@@ -1277,13 +1046,9 @@ mod tests {
         (widget, codex_home)
     }
 
-    #[tokio::test]
-    async fn api_key_entry_snapshots() {
-        let (mut widget, _tmp) = widget_forced_chatgpt().await;
-        widget.auth_config.forced_login_method = None;
-        *widget.sign_in_state.write().unwrap() =
-            SignInState::ApiKeyEntry(ApiKeyInputState::default());
-
+    #[test]
+    fn api_key_entry_snapshots() {
+        let state = ApiKeyInputState::default();
         for (name, width) in [("api_key_entry", 80), ("api_key_entry_narrow", 40)] {
             let height = 14;
             let area = Rect::new(/*x*/ 0, /*y*/ 0, width, height);
@@ -1293,7 +1058,7 @@ mod tests {
             .expect("terminal");
             terminal.set_viewport_area(area);
             terminal
-                .draw(|frame| widget.render_ref(area, frame.buffer_mut()))
+                .draw(|frame| api_setup::render_api_setup(area, frame.buffer_mut(), &state, None))
                 .expect("draw");
 
             insta::assert_snapshot!(name, terminal.backend().to_string());
@@ -1384,7 +1149,12 @@ mod tests {
     async fn saving_api_key_is_blocked_when_chatgpt_forced() {
         let (mut widget, _tmp) = widget_forced_chatgpt().await;
 
-        widget.save_api_key("sk-test".to_string());
+        *widget.sign_in_state.write().unwrap() = SignInState::ApiKeyEntry(ApiKeyInputState {
+            value: "synthetic-key-not-a-credential".into(),
+            field: ApiSetupField::Key,
+            ..ApiKeyInputState::default()
+        });
+        widget.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
         assert_eq!(
             widget.error_message().as_deref(),

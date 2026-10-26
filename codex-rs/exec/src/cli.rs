@@ -1,3 +1,4 @@
+// Modified for ercode: non-interactive command usage branding.
 use clap::Args;
 use clap::FromArgMatches;
 use clap::Parser;
@@ -10,7 +11,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     version,
-    override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
+    override_usage = "ercode exec [OPTIONS] [PROMPT]\n       ercode exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {
     /// Action to perform. If omitted, runs a new non-interactive session.
