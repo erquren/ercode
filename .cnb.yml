@@ -1,0 +1,16 @@
+$:
+  # 云原生开发环境（保留原配置）
+  vscode:
+    - runner:
+        # 这里填你需要的CPU核数，比如要32核就写32，最高64
+        cpus: 64
+      docker:
+        # 你指定的镜像
+        image: docker.cnb.cool/erquren_pub/env/ubt2404
+      services:
+        - vscode
+        - docker
+      # 开发环境启动后可以加你要执行的任务，不需要的话可以删掉
+      stages:
+        - name: 查看环境信息
+          script: uname -a && cat /etc/os-release
