@@ -25,7 +25,7 @@ fn winget_package_starts_and_reselects_daemon() -> Result<()> {
     for directory in ["bin", "codex-path", "codex-resources/voice"] {
         std::fs::create_dir_all(package.join(directory))?;
     }
-    copy_executable(&codex_utils_cargo_bin::cargo_bin("codex")?, &codex)?;
+    copy_executable(&codex_utils_cargo_bin::cargo_bin("er")?, &codex)?;
     for helper in [
         "codex-code-mode-host.exe",
         "codex-path/rg.exe",

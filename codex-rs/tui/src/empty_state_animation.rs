@@ -250,13 +250,32 @@ impl EmptyStateAnimation {
             phase,
             &light,
         );
-        for (i, cell) in cells.iter().enumerate().filter(|(_, cell)| cell.dots != 0) {
-            let [_, r, g, b] = cell.rgb.to_be_bytes();
+        // Preserve the supplied ASCII mark exactly; center without resampling its glyphs.
+        let mark: Vec<&str> = include_str!("empty_state_animation/mark.txt").lines().collect();
+        let width = mark.iter().map(|line| line.len()).max().unwrap_or(0) as u16;
+        let x_offset = area.width.saturating_sub(width) / 2;
+        let y_offset = area.height.saturating_sub(mark.len() as u16) / 2;
+        let indices = mark.iter().enumerate().flat_map(|(y, line)| {
+            line.bytes().enumerate().filter_map(move |(x, glyph)| {
+                let x = x_offset + x as u16;
+                let y = y_offset + y as u16;
+                (glyph == b'#' && x < area.width && y < area.height)
+                    .then_some(usize::from(y) * usize::from(area.width) + usize::from(x))
+            })
+        });
+        for i in indices {
+            let cell = &cells[i];
+            let (r, g, b) = if cell.dots == 0 {
+                terminal_palette::default_fg().unwrap_or((210, 221, 235))
+            } else {
+                let [_, r, g, b] = cell.rgb.to_be_bytes();
+                (r, g, b)
+            };
             let target = &mut buffer[(
                 area.x + i as u16 % area.width,
                 area.y + i as u16 / area.width,
             )];
-            target.set_char(char::from_u32(0x2800 + u32::from(cell.dots)).unwrap_or(' '));
+            target.set_char('#');
             let color = crate::color::blend((r, g, b), background, opacity);
             let color = if color_level == terminal_palette::StdoutColorLevel::Ansi256 {
                 // Four bits per channel bound the cache and avoid palette searches each frame.

@@ -8,8 +8,8 @@ load("//bazel/rules:runtime_package.bzl", "release_binary")
 
 codex_rust_crate(
     name = "cli",
-    # ercode fork: stamp both public and compatibility executables.
-    binaries_with_build_commit = ["codex", "ercode"],
+    # ercode fork: expose only the er CLI executable.
+    binaries_with_build_commit = ["er"],
     crate_name = "codex_cli",
     extra_binaries = [
         "//codex-rs/bwrap:bwrap",
@@ -30,8 +30,8 @@ rust_test(
     args = ["--test-threads=1"],
     crate_name = "app_server_daemon_package",
     crate_root = "tests/app_server_daemon/package.rs",
-    data = [":codex"],
-    env = {"CARGO_BIN_EXE_codex": "$(rlocationpath :codex)"},
+    data = [":er"],
+    env = {"CARGO_BIN_EXE_er": "$(rlocationpath :codex)"},
     rustc_env = {"BAZEL_PACKAGE": "codex-rs/cli"},
     rustc_flags = MACOS_WEBRTC_RUSTC_LINK_FLAGS,
     tags = ["exclusive"],
@@ -48,14 +48,14 @@ rust_test(
 )
 
 release_binary(
-    binary = ":codex",
+    binary = ":er",
 )
 
 multiplatform_binaries(
-    name = "codex",
+    name = "er",
 )
 
 codex_e2e_benchmark(
     name = "codex-help",
-    binaries = [":codex"],
+    binaries = [":er"],
 )

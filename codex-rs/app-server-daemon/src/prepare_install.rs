@@ -163,11 +163,13 @@ async fn prepare_from_package(
         "bin/codex"
     };
     let source_entrypoint = metadata["entrypoint"].as_str().unwrap_or_default();
+    let er_entrypoint = if cfg!(windows) { "bin/er.exe" } else { "bin/er" };
+    let branded = source_entrypoint == er_entrypoint;
     let winget = cfg!(windows)
         && metadata["layoutVersion"] == 1
         && source_entrypoint == format!("codex-{target}.exe");
     anyhow::ensure!(
-        metadata["target"] == target && (source_entrypoint == entrypoint || winget),
+        metadata["target"] == target && (source_entrypoint == entrypoint || branded || winget),
         "the CLI package does not match this platform or executable"
     );
     validate_package(source, source_entrypoint)?;
@@ -248,7 +250,18 @@ async fn prepare_from_package(
     );
     // Reverse the WinGet archive's root filenames only after verifying the copied
     // source. Hash the final tree for reuse, since it now differs from the source.
-    let digest = if winget {
+    // Keep the daemon's private executable layout compatible without exposing
+    // a codex command in the user's PATH.
+    let digest = if branded {
+        std::fs::rename(stage.path().join(source_entrypoint), stage.path().join(entrypoint))?;
+        metadata["entrypoint"] = entrypoint.into();
+        std::fs::write(
+            stage.path().join("codex-package.json"),
+            serde_json::to_vec_pretty(&metadata)?,
+        )?;
+        staged_digests.clear();
+        package_tree(stage.path(), /*destination*/ None, &mut staged_digests)?
+    } else if winget {
         std::fs::create_dir_all(stage.path().join("bin"))?;
         #[cfg(windows)]
         for (from, to) in [

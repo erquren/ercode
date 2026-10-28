@@ -116,7 +116,7 @@ use codex_terminal_detection::TerminalName;
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
 #[clap(
-    name = "ercode",
+    name = "er",
     author,
     version,
     // If a sub‑command is given, ignore requirements of the default args.
@@ -124,8 +124,8 @@ use codex_terminal_detection::TerminalName;
     // The executable is sometimes invoked via a platform‑specific name like
     // `codex-x86_64-unknown-linux-musl`, but the help output should always use
     // the generic `ercode` command name that users run.
-    bin_name = "ercode",
-    override_usage = "ercode [OPTIONS] [PROMPT]\n       ercode [OPTIONS] <COMMAND> [ARGS]"
+    bin_name = "er",
+    override_usage = "er [OPTIONS] [PROMPT]\n       er [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -2834,7 +2834,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
 
 fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
-    let name = "ercode";
+    let name = "er";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 

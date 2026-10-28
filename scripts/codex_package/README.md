@@ -104,3 +104,25 @@ DotSlash manifest at `scripts/codex_package/rg`. Downloaded archives are cached
 under `$TMPDIR/codex-package/<target>-rg` and are reused only after the recorded
 size and SHA-256 digest have been verified. Pass `--rg-bin` to use a local
 ripgrep executable instead.
+
+### ercode installation alongside Codex
+
+The CLI package variant `codex` is retained as an internal build selector; it now
+builds the `er` Cargo target and packages it as `bin/er`. Helper filenames and
+package metadata names remain internal and unchanged.
+
+On Linux and macOS, install an extracted local package with:
+
+```sh
+python3 scripts/install/install_er.py /path/to/extracted-package
+```
+
+The complete package is copied into a unique release directory under
+`~/.ercode/packages/standalone/releases/`. Only `~/.local/bin/er` is linked into
+the user's command directory. Add `~/.local/bin` to PATH if needed; do not add the
+package's `bin` or `codex-path` directories to the login shell PATH. The runtime
+resolves the er symlink to locate its private helpers. Existing `codex` commands
+and installations are untouched. Older release directories are retained.
+
+Use this local installer for this fork. The upstream `install.sh` and
+`install.ps1` scripts download official Codex releases and are not er installers.

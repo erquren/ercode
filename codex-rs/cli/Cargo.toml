@@ -4,16 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
-default-run = "ercode"
+default-run = "er"
+autobins = false
 
-# Modified for ercode: add a branded entrypoint; retain the internal compatibility binary.
+# Only expose the branded short command; do not install a codex compatibility entrypoint.
 [[bin]]
-name = "ercode"
-path = "src/ercode.rs"
-test = false
-
-[[bin]]
-name = "codex"
+name = "er"
 path = "src/main.rs"
 
 [[bin]]
