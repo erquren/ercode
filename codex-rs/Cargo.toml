@@ -30,6 +30,7 @@ members = [
     "code-mode-host",
     "code-mode-protocol",
     "code-mode-runtime",
+    "plugin-host",
     "codex-home",
     "cloud-config",
     "cloud-tasks",
@@ -58,6 +59,7 @@ members = [
     "file-system",
     "exec-server-protocol",
     "exec-server",
+    "exec-server-cli",
     "exec-server/tests/support",
     "execpolicy",
     "ext/agent",
@@ -208,6 +210,7 @@ codex-cloud-tasks-mock-client = { path = "cloud-tasks-mock-client" }
 codex-code-mode = { path = "code-mode" }
 codex-code-mode-protocol = { path = "code-mode-protocol" }
 codex-code-mode-runtime = { path = "code-mode-runtime" }
+codex-plugin-host = { path = "plugin-host" }
 codex-home = { path = "codex-home" }
 codex-http-client = { path = "http-client" }
 codex-websocket-auth = { path = "websocket-auth" }
@@ -225,10 +228,12 @@ codex-core-api = { path = "core-api" }
 codex-core-plugin-common = { path = "core-plugin-common" }
 codex-core-plugins = { path = "core-plugins" }
 codex-diagnostics = { path = "diagnostics" }
+codex-direct-tool-timing = { path = "direct-tool-timing" }
 codex-exec = { path = "exec" }
 codex-file-system = { path = "file-system" }
 codex-exec-server-protocol = { path = "exec-server-protocol" }
 codex-exec-server = { path = "exec-server" }
+codex-exec-server-cli = { path = "exec-server-cli" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
 codex-extension-api = { path = "ext/extension-api" }
@@ -282,6 +287,7 @@ codex-response-debug-context = { path = "response-debug-context" }
 codex-rmcp-client = { path = "rmcp-client" }
 codex-rollout = { path = "rollout" }
 codex-rollout-trace = { path = "rollout-trace" }
+codex-runtime-agent-instance = { path = "runtime-agent-instance" }
 codex-sandboxing = { path = "sandboxing" }
 codex-secrets = { path = "secrets" }
 codex-shell-command = { path = "shell-command" }
