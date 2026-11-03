@@ -16,7 +16,10 @@ concurrency:
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_HOME: ${{ github.workspace }}/.cargo-home
   CARGO_TERM_COLOR: always
+  # Keep large Rust/V8 builds within standard hosted-runner memory.
+  CARGO_BUILD_JOBS: "2"
   CARGO_INCREMENTAL: "0"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CARGO_PROFILE_DEV_DEBUG: "0"
@@ -87,6 +90,19 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libcap-dev libasound2-dev clang cmake bubblewrap
+      - name: Use short Cargo paths on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: .
+        run: |
+          $drive = [IO.Path]::GetPathRoot($env:GITHUB_WORKSPACE)
+          $cargoHome = Join-Path $drive 'ercargo'
+          $targetDir = Join-Path $drive 'ertarget'
+          New-Item -ItemType Directory -Force $cargoHome, $targetDir | Out-Null
+          "CARGO_HOME=$cargoHome" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_TARGET_DIR=$targetDir" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "$cargoHome\bin" | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          git config --global core.longpaths true
       - name: Install the repository Rust toolchain
         run: |
           rustup show active-toolchain
@@ -94,9 +110,9 @@ jobs:
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
+            ${{ env.CARGO_HOME }}/registry/index
+            ${{ env.CARGO_HOME }}/registry/cache
+            ${{ env.CARGO_HOME }}/git/db
           key: ercode-cargo-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
           restore-keys: ercode-cargo-${{ matrix.target }}-
       - uses: ./.github/actions/setup-msvc-env
@@ -115,6 +131,8 @@ jobs:
       - name: Clippy (CLI, core, TUI)
         run: cargo clippy --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --all-targets -- -D warnings
       - name: Build runtime helpers used by unit tests
+        id: helpers
+        if: ${{ !cancelled() }}
         run: |
           bins=(--bin er --bin codex-code-mode-host --bin codex-exec-server)
           if [[ "$RUNNER_OS" == Linux ]]; then
@@ -123,12 +141,23 @@ jobs:
             bins+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
           fi
           cargo build --locked --target "${{ matrix.target }}" "${bins[@]}"
+          # Upstream test fixtures still ask for the old command name. Point
+          # tests at er without adding a legacy executable to any package.
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          suffix = ".exe" if os.name == "nt" else ""
+          binary = Path(os.environ["CARGO_TARGET_DIR"]) / "${{ matrix.target }}" / "debug" / f"er{suffix}"
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              print(f"CARGO_BIN_EXE_codex={binary.resolve()}", file=output)
+          PYTHON
       - name: Unit tests (CLI, core, TUI)
+        if: ${{ !cancelled() && steps.helpers.outcome == 'success' }}
         run: cargo nextest run --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --lib --bins --no-fail-fast
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: tests-${{ matrix.target }}
-          path: codex-rs/target/nextest/default/junit.xml
+          path: ${{ env.CARGO_TARGET_DIR }}/nextest/default/junit.xml
           if-no-files-found: ignore

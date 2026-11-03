@@ -14,6 +14,8 @@ Runs on pull requests, every branch push and manual dispatch:
 - Clippy (`--all-targets`) and unit tests (`--lib --bins`) for `codex-cli`,
   `codex-core` and `codex-tui` on Linux x64, Windows x64 and macOS Apple Silicon.
 - Cargo uses the committed lockfile. Test reports are retained as artifacts.
+- Test builds/runs continue after a Clippy failure to report both results; the
+  job still fails if Clippy fails. No lint or test failure is ignored.
 
 The scope is deliberate: this is not the upstream full workspace, integration,
 voice SDK or Bazel test matrix. Their source dependencies are not removed.
