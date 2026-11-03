@@ -299,6 +299,39 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(api.call_args_list[0].args, ('/repos/o/r/releases/assets/8', 'DELETE'))
         self.assertEqual(api.call_args_list[1].args[1], 'POST')
 
+    def test_approved_replacement_identity_is_allowed(self):
+        old = dict(self.asset, id=8, digest='sha256:old')
+        with patch.object(publish, 'fresh_draft', return_value=self.release), \
+                patch.object(publish, 'release_assets', side_effect=[[old], [old]]), \
+                patch.object(publish, 'api', side_effect=[None, self.asset]) as api:
+            publish.upload_asset('o/r', self.release, self.path, self.root, True,
+                                 approved_replacement_assets={8: self.path.name})
+        self.assertEqual(api.call_args_list[0].args, ('/repos/o/r/releases/assets/8', 'DELETE'))
+        self.assertEqual(api.call_args_list[1].args[1], 'POST')
+
+    def test_unapproved_replacement_identity_or_name_is_rejected(self):
+        old = dict(self.asset, id=8, digest='sha256:old')
+        for approved in ({7: self.path.name}, {8: 'different-name.zip'}, {}):
+            with self.subTest(approved=approved), \
+                    patch.object(publish, 'fresh_draft', return_value=self.release), \
+                    patch.object(publish, 'release_assets', return_value=[old]), \
+                    patch.object(publish, 'api') as api:
+                with self.assertRaisesRegex(RuntimeError, 'not approved'):
+                    publish.upload_asset('o/r', self.release, self.path, self.root, True,
+                                         approved_replacement_assets=approved)
+                api.assert_not_called()
+
+    def test_publish_forwards_approved_replacement_mapping(self):
+        approved = {8: self.path.name}
+        with patch.object(publish, 'tag_commit', return_value='source'), \
+                patch.object(publish, 'verify_replacement_files'), \
+                patch.object(publish, 'create_draft', return_value=self.release), \
+                patch.object(publish, 'upload_asset', side_effect=RuntimeError('stop after forwarding')) as upload:
+            with self.assertRaisesRegex(RuntimeError, 'stop after forwarding'):
+                publish.publish('o/r', '1.2.3', 'source', [self.path], self.root, True,
+                                approved_replacement_assets=approved)
+        upload.assert_called_once_with('o/r', self.release, self.path, self.root, True, approved)
+
     def test_uncertain_delete_reconciles_absence_or_stops(self):
         for remaining in ([], [self.asset]):
             with patch.object(publish, 'fresh_draft', return_value=self.release), \

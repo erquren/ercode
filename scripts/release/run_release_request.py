@@ -19,7 +19,8 @@ BRANCH = 'refs/heads/release-publish/' + TAG
 def validate_request(request, repo, ref):
     if repo != REPO or ref != BRANCH:
         raise ValueError('Release requests are restricted to the ercode publishing branch')
-    if set(request) != {'tag', 'source_commit', 'mode', 'runs', 'replace_draft_assets'}:
+    required = {'tag', 'source_commit', 'mode', 'runs', 'replace_draft_assets'}
+    if not required.issubset(request) or set(request) - required - {'approved_replacement_assets'}:
         raise ValueError('Unexpected release request fields')
     if request['tag'] != TAG or not re.fullmatch('[0-9a-f]{40}', request['source_commit']):
         raise ValueError('Invalid release tag or source commit')
@@ -33,6 +34,11 @@ def validate_request(request, repo, ref):
         raise ValueError('Build runs must be positive integer IDs')
     if request['mode'] != 'inspect' and not request['runs']:
         raise ValueError('Build runs are required for validation or publication')
+    approved = request.get('approved_replacement_assets', {})
+    if not isinstance(approved, dict) or any(not re.fullmatch('[1-9][0-9]*', key) or not isinstance(name, str) for key, name in approved.items()):
+        raise ValueError('Approved replacements must map exact positive asset IDs to names')
+    if request['replace_draft_assets'] and not approved:
+        raise ValueError('Replacement requires exact approved asset IDs and names')
 
 
 def inspect_release(repo, tag, root):
@@ -94,7 +100,8 @@ def execute(request, repo, ref):
             inspect_release(repo, request['tag'], root)
             print('All four packages verified; no release changes made', flush=True)
             return
-        publish_er.publish(repo, request['tag'], commit, files, root, request['replace_draft_assets'])
+        publish_er.publish(repo, request['tag'], commit, files, root, request['replace_draft_assets'],
+                           approved_replacement_assets={int(key): name for key, name in request.get('approved_replacement_assets', {}).items()})
 
 
 def main():

@@ -277,7 +277,10 @@ def create_draft(repo, tag, commit):
         raise RuntimeError("Draft creation outcome uncertain; inspect release before rerunning") from error
 
 
-def delete_draft_asset(repo, release, asset):
+def delete_draft_asset(repo, release, asset, approved_replacement_assets=None):
+    if (approved_replacement_assets is not None
+            and approved_replacement_assets.get(asset["id"]) != asset["name"]):
+        raise RuntimeError("Draft asset identity/name is not approved for replacement")
     fresh_draft(repo, release["id"])
     # Delete only the exact current asset identified during mismatch verification.
     current = next((item for item in release_assets(repo, release["id"])
@@ -286,6 +289,9 @@ def delete_draft_asset(repo, release, asset):
         return
     if current["name"] != asset["name"]:
         raise RuntimeError("Draft asset changed before deletion")
+    if (approved_replacement_assets is not None
+            and approved_replacement_assets.get(current["id"]) != current["name"]):
+        raise RuntimeError("Draft asset identity/name is not approved for replacement")
     try:
         api(f"/repos/{repo}/releases/assets/{asset['id']}", "DELETE")
     except Exception as error:
@@ -296,7 +302,8 @@ def delete_draft_asset(repo, release, asset):
             raise RuntimeError("Draft asset deletion outcome uncertain; inspect before rerunning") from error
 
 
-def upload_asset(repo, release, path, root, replace_draft_assets=False):
+def upload_asset(repo, release, path, root, replace_draft_assets=False,
+                 approved_replacement_assets=None):
     fresh = fresh_draft(repo, release["id"])
     existing = next((asset for asset in release_assets(repo, release["id"])
                      if asset["name"] == path.name), None)
@@ -307,7 +314,7 @@ def upload_asset(repo, release, path, root, replace_draft_assets=False):
         except AssertionError:
             if not replace_draft_assets:
                 raise
-        delete_draft_asset(repo, release, existing)
+        delete_draft_asset(repo, release, existing, approved_replacement_assets)
         fresh = fresh_draft(repo, release["id"])
     url = fresh["upload_url"].split("{")[0] + "?" + urllib.parse.urlencode({"name": path.name})
     print("Uploading:", path.name, flush=True)
@@ -324,20 +331,22 @@ def upload_asset(repo, release, path, root, replace_draft_assets=False):
     verify_uploaded(repo, asset, path, root)
 
 
-def publish(repo, tag, commit, files, root, replace_draft_assets=False):
+def publish(repo, tag, commit, files, root, replace_draft_assets=False,
+            approved_replacement_assets=None):
     assert tag_commit(repo, tag) == commit, "Release tag moved while builds were running"
     if replace_draft_assets:
         verify_replacement_files(files, tag, commit)
     release = create_draft(repo, tag, commit)
     for path in files:
-        upload_asset(repo, release, path, root, replace_draft_assets)
+        upload_asset(repo, release, path, root, replace_draft_assets, approved_replacement_assets)
     body = f'''四个平台均在 GitHub 原生构建机上从 `{tag}` 标签源码编译，源码提交为 `{commit}`。
 
 - Windows x86_64：ZIP 包。
 - Linux x86_64 / ARM64：MUSL 静态 tar.gz 包，不依赖系统 GLIBC。
-- macOS ARM64 / Apple Silicon：tar.gz 包，本地临时签名，未做 Apple Developer ID 公证。
+- macOS ARM64 / Apple Silicon：tar.gz 包，需要 macOS 14 或更新版本。本地临时签名，未做 Apple Developer ID 公证；系统可能要求用户批准此下载。
 
 每个包包含 er、私有辅助程序、安装脚本、许可证和 BUILD-INFO.json，并附有 SHA-256 校验文件。
+保留整个解压目录，不要只复制 er。包内不包含语音功能，也不需要安装 Node.js 或 Python 来启动 CLI。
 
 解压后即可直接运行，无需 Python：
 Linux/macOS：进入解压目录运行 `./bin/er`。
@@ -348,6 +357,8 @@ Windows 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.p
 
 将 `~/.local/bin`（Windows 为 `%USERPROFILE%\\.local\\bin`）加入 PATH。配置和辅助程序保存在 `~/.ercode`，已有 Codex 安装不受影响。
 从旧的 0.166.0 更新后，先用 `er --no-daemon` 启动，确保使用新后端。
+
+所有平台均已验证最终归档解压后的程序启动和可选安装脚本。登录、模型服务配置和项目所需的开发工具仍由使用者配置；此验证不等于所有模型调用和沙箱功能的端到端测试。
 
 本版本包括实时思考文本速度估算，以及结束行独立的输入、输出平均速率。结束速率采用模型请求累计耗时，排除请求之间的编译和工具等待。
 '''

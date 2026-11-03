@@ -1,7 +1,9 @@
 {
   "tag": "0.166.0",
   "source_commit": "2b92e007fbcd1b72957c3f98b7f4017bcc6de25e",
-  "mode": "inspect",
-  "runs": [],
+  "mode": "check_only",
+  "runs": [
+    41659334563
+  ],
   "replace_draft_assets": false
 }
