@@ -12,7 +12,8 @@ permissions:
 
 concurrency:
   group: ercode-ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Keep a running cross-platform test result when a follow-up commit arrives.
+  cancel-in-progress: false
 
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
@@ -49,7 +50,9 @@ jobs:
         run: |
           python scripts/test_build_ercode.py
           python scripts/test_ercode_release.py
+          python scripts/test_build_ercode_voice.py
           python -m unittest discover -s scripts/codex_package -t scripts -p 'test_*.py'
+          python -m unittest discover -s third_party/voice -p 'test_assemble_package.py'
       - name: Check whitespace
         run: git diff --check
 

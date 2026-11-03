@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -80,11 +81,11 @@ class ReleaseTest(unittest.TestCase):
             output = root / "dist"
             archive = output / f"ercode-1.2.3-{target}.tar.gz"
 
-            def package(args):
+            def archive_writer(*args, **kwargs):
                 archive.write_bytes(b"archive fixture")
 
-            with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}), patch.object(release.subprocess, "check_output", return_value="a" * 40 + "\n"), patch.object(release.subprocess, "run") as run, patch.object(release, "build_package", side_effect=package) as builder, patch.object(release, "validate_package") as validate, patch.object(release.shutil, "unpack_archive"):
-                self.assertEqual(release.build(target, "1.2.3", output), archive)
+            with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target_dir)}), patch.object(release.subprocess, "check_output", return_value="a" * 40 + "\n"), patch.object(release.subprocess, "run") as run, patch.object(release, "build_package") as builder, patch.object(release, "assemble_voice") as voice, patch.object(release, "write_archive", side_effect=archive_writer), patch.object(release, "validate_package") as validate, patch.object(release, "validate_voice"), patch.object(release, "smoke_voice"), patch.object(release.shutil, "unpack_archive"):
+                self.assertEqual(release.build(target, "1.2.3", output, root / "voice-release"), archive)
             calls = run.call_args_list
             self.assertIn("--locked", calls[0].args[0])
             self.assertEqual(calls[0].args[0][-2:], ["--bin", "bwrap"])
@@ -97,7 +98,55 @@ class ReleaseTest(unittest.TestCase):
             for option in ("--entrypoint-bin", "--code-mode-host-bin", "--exec-server-bin"):
                 self.assertIn(option, args)
             self.assertEqual(validate.call_count, 2)
+            self.assertEqual(voice.call_args.kwargs["entrypoint_name"], "er")
+            self.assertEqual(voice.call_args.args[3], "a" * 40)
+            self.assertEqual(voice.call_args.kwargs["runtime"], root / "voice-release/runtime")
             self.assertEqual((output / f"{archive.name}.sha256").read_text(), f"{release.digest(archive)}  {archive.name}\n")
+
+    def test_checks_voice_manifest_hashes_and_commit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = "aarch64-apple-darwin"
+            self.fixture(root, target)
+            voice = root / "codex-resources/voice"
+            (voice / "bin").mkdir(parents=True)
+            (voice / "bin/codex-voice-host").write_bytes(b"helper fixture")
+            (voice / "runtime.json").write_text(json.dumps({"sourceCommit": "a" * 40}))
+            hashes = {relative: release.digest(root / relative) for relative in ("bin/er", "codex-resources/voice/bin/codex-voice-host", "codex-resources/voice/runtime.json")}
+            manifest = {"schemaVersion": 1, "buildCommit": "a" * 40, "appTarget": target, "voiceTarget": target, "appVersion": "1.2.3", "sha256": hashes}
+            (voice / "manifest.json").write_text(json.dumps(manifest))
+            with patch.object(release, "runtime_files", return_value={"runtime.json": hashes["codex-resources/voice/runtime.json"]}):
+                release.validate_voice(root, target, "1.2.3", "a" * 40)
+                with self.assertRaisesRegex(ValueError, "buildCommit"):
+                    release.validate_voice(root, target, "1.2.3", "b" * 40)
+                (root / "bin/er").write_bytes(b"tampered")
+                with self.assertRaisesRegex(ValueError, "digest mismatch"):
+                    release.validate_voice(root, target, "1.2.3", "a" * 40)
+
+    @unittest.skipIf(os.name == "nt", "Unix executable fixture")
+    def test_voice_smoke_initializes_runtime_without_audio_or_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "helper"
+            helper.write_text(f"#!{sys.executable}\n" + r'''import json, os, sys
+if sys.argv[1:] == ["--build-commit"]:
+    print("a" * 40)
+    sys.exit(0)
+assert os.environ["GST_PLUGIN_SYSTEM_PATH"] == ""
+assert os.environ["GST_REGISTRY_UPDATE"] == "no"
+for expected, reply in (("hello", "ready"), ("initializeRuntime", "runtimeReady"), ("close", "closed")):
+    size = int.from_bytes(sys.stdin.buffer.read(4), "big")
+    request = json.loads(sys.stdin.buffer.read(size))
+    assert request["type"] == expected
+    if expected == "hello":
+        assert request["buildCommit"] == "a" * 40
+    payload = json.dumps({"type": reply}).encode()
+    sys.stdout.buffer.write(len(payload).to_bytes(4, "big") + payload)
+    sys.stdout.buffer.flush()
+''')
+            helper.chmod(0o755)
+            release.smoke_voice(helper, "a" * 40)
+            with self.assertRaisesRegex(ValueError, "build commit"):
+                release.smoke_voice(helper, "b" * 40)
 
 
 if __name__ == "__main__":

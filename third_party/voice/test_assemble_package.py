@@ -617,6 +617,25 @@ class AssembleTests(unittest.TestCase):
         self.assertEqual(self.helper.read_bytes(), b"private helper")
         self.assertFalse((self.package / "nested").exists())
 
+    def test_ercode_release_uses_er_entrypoint_and_current_commit(self):
+        self.commit = "b" * 40
+        runtime, _ = self.make_runtime()
+        staged = self.root / "staged"
+        stage(runtime, staged, "aarch64-unknown-linux-gnu")
+        seal(staged, "aarch64-unknown-linux-gnu")
+        (self.package / "bin/codex").rename(self.package / "bin/er")
+        self.metadata.update(entrypoint="bin/er", version="0.166.0-rc.1")
+        (self.package / "codex-package.json").write_text(json.dumps(self.metadata))
+        assemble(
+            self.package, self.helper, "aarch64-unknown-linux-gnu", self.commit,
+            self.output, runtime=staged, release_version="0.166.0-rc.1", entrypoint_name="er",
+        )
+        manifest = json.loads((self.output / "codex-resources/voice/manifest.json").read_text())
+        self.assertEqual(manifest["sha256"]["bin/er"], digest(self.package / "bin/er"))
+        self.assertNotIn("bin/codex", manifest["sha256"])
+        self.assertEqual(manifest["buildCommit"], self.commit)
+        self.assertFalse((self.output / "bin/codex").exists())
+
     def test_cleans_only_its_new_copy_on_failure(self):
         runtime, _ = self.make_runtime()
         with patch("assemble_package.shutil.copy2", side_effect=OSError("copy failed")):

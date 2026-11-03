@@ -23,6 +23,7 @@ def assemble(
     *,
     runtime: Path,
     release_version: str | None = None,
+    entrypoint_name: str = "codex",
 ):
     package, helper = package.resolve(strict=True), helper.resolve(strict=True)
     output = output.absolute()
@@ -51,7 +52,9 @@ def assemble(
     if targets.get(app_target) != voice_target:
         raise ValueError("incompatible app and helper targets")
     suffix = ".exe" if app_target.endswith("windows-msvc") else ""
-    entrypoint = f"bin/codex{suffix}"
+    if entrypoint_name not in ("codex", "er"):
+        raise ValueError("unsupported package entrypoint")
+    entrypoint = f"bin/{entrypoint_name}{suffix}"
     expected = {
         "layoutVersion": 1,
         "variant": "codex",
@@ -66,7 +69,7 @@ def assemble(
             raise ValueError("package version does not match the declared build")
     elif (
         not re.fullmatch(
-            r"[0-9]+\.[0-9]+\.[0-9]+(?:-alpha(?:\.[0-9]+){0,2}|-beta(?:\.[0-9]+)?)?",
+            r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
             release_version,
         )
         or metadata["version"] != release_version
@@ -156,6 +159,7 @@ if __name__ == "__main__":
     parser.add_argument("--helper", type=Path, required=True)
     parser.add_argument("--voice-target", required=True)
     parser.add_argument("--build-commit", required=True)
+    parser.add_argument("--entrypoint-name", choices=("codex", "er"), default="codex")
     parser.add_argument(
         "--release-version", help="exact version of a public release package"
     )
@@ -175,4 +179,5 @@ if __name__ == "__main__":
         args.output,
         runtime=args.runtime,
         release_version=args.release_version,
+        entrypoint_name=args.entrypoint_name,
     )

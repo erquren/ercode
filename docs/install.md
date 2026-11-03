@@ -33,15 +33,24 @@ cargo run --locked -p codex-cli --bin er -- --help
 
 Use `target/debug/er` on Linux/macOS or `target\debug\er.exe` on Windows.
 This builds the main CLI only. Features requiring companion executables need the
-complete package described below. The public command and Cargo binary target for this fork are `er`; no
+base package described below. The public command and Cargo binary target for this fork are `er`; no
 `codex` compatibility command is installed.
 
-## Complete package
+## Local base CLI package
 
 From the repository root, use the ercode wrapper around the upstream canonical
 package builder. It builds the `er` CLI and required companion executables, then adds
 redistribution notices. Internal `codex` package metadata and resource names
-remain intact for daemon installation and resource discovery.
+remain intact for daemon installation and resource discovery. This local base
+builder does not add voice. Tagged releases use the additional upstream native
+voice build and assembly layer described in the workflow documentation.
+
+For published archives, extract the entire folder and run `bin/er` (Windows:
+`bin/er.exe`). Keep `codex-resources` and `codex-path` next to `bin`; copying just
+the executable loses required helpers and runtime data. The tag workflow bundles
+voice libraries and plugins as well as the normal CLI companions, then tests
+loading them. Audio device permissions and service authentication are separate
+requirements. Linux voice requires GNU/glibc even though the CLI itself uses musl.
 
 Linux x86_64 with glibc:
 

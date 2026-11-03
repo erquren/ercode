@@ -7,16 +7,23 @@ import argparse
 import hashlib
 import json
 import os
+import queue
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 
 from build_ercode import main as build_package
+from codex_package.archive import write_archive
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "third_party/voice"))
+from assemble_package import assemble as assemble_voice
+from package_runtime import runtime_files
+
 TARGETS = {
     "x86_64-unknown-linux-musl": "tar.gz",
     "x86_64-pc-windows-msvc": "zip",
@@ -66,7 +73,76 @@ def validate_package(package: Path, target: str, version: str, bwrap_digest: str
             raise ValueError(f"Unexpected legacy command alias: {name}")
 
 
-def build(target: str, version: str, output: Path) -> Path:
+def validate_voice(package: Path, target: str, version: str, commit: str) -> None:
+    """Verify upstream runtime inventory and every same-build package hash."""
+    root = package / "codex-resources/voice"
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    voice_target = target.replace("-musl", "-gnu")
+    for field, value in {"schemaVersion": 1, "buildCommit": commit, "appTarget": target, "voiceTarget": voice_target, "appVersion": version}.items():
+        if manifest.get(field) != value:
+            raise ValueError(f"Incorrect voice manifest {field}")
+    receipt = json.loads((root / "runtime.json").read_text(encoding="utf-8"))
+    if receipt.get("sourceCommit") != commit:
+        raise ValueError("Voice runtime was built from another commit")
+    suffix = ".exe" if target.endswith("msvc") else ""
+    required = {f"bin/er{suffix}", f"codex-resources/voice/bin/codex-voice-host{suffix}"}
+    required.update(f"codex-resources/voice/{name}" for name in runtime_files(root, voice_target, public_release=True))
+    hashes = manifest.get("sha256", {})
+    if not required.issubset(hashes):
+        raise ValueError("Voice manifest omits required package files")
+    for relative, expected in hashes.items():
+        path = package / relative
+        if path.is_symlink() or not path.resolve().is_relative_to(package.resolve()) or not path.is_file():
+            raise ValueError(f"Invalid voice manifest path: {relative}")
+        if digest(path) != expected:
+            raise ValueError(f"Voice manifest digest mismatch: {relative}")
+
+
+def smoke_voice(helper: Path, commit: str) -> None:
+    """Load packaged plugins without opening audio devices or making a connection."""
+    actual = subprocess.check_output([str(helper), "--build-commit"], text=True, timeout=30).strip()
+    if actual != commit:
+        raise ValueError("Voice helper does not match the application build commit")
+    env = dict(os.environ)
+    env.update({name: "" for name in ("GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH", "GST_PLUGIN_SYSTEM_PATH_1_0")})
+    env.update(GST_REGISTRY="NUL" if os.name == "nt" else "/dev/null", GST_REGISTRY_UPDATE="no", GST_REGISTRY_FORK="no")
+    with subprocess.Popen([str(helper)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=env) as process:
+        responses = queue.Queue()
+
+        def read_responses():
+            try:
+                while True:
+                    header = process.stdout.read(4)
+                    if len(header) != 4:
+                        raise ValueError("Voice helper closed before its reply")
+                    size = int.from_bytes(header, "big")
+                    if not 0 < size <= 1024 * 1024:
+                        raise ValueError("Invalid voice protocol frame size")
+                    responses.put(json.loads(process.stdout.read(size)))
+            except BaseException as error:
+                responses.put(error)
+
+        reader = threading.Thread(target=read_responses, daemon=True)
+        reader.start()
+        try:
+            for request, expected in (({"type": "hello", "protocol": 1, "buildCommit": commit}, "ready"), ({"type": "initializeRuntime"}, "runtimeReady"), ({"type": "close"}, "closed")):
+                payload = json.dumps(request).encode()
+                process.stdin.write(len(payload).to_bytes(4, "big") + payload)
+                process.stdin.flush()
+                response = responses.get(timeout=30)
+                if response != {"type": expected}:
+                    raise ValueError(f"Voice helper failed {expected}: {response}")
+            process.stdin.close()
+            if process.wait(timeout=30) != 0:
+                raise ValueError("Voice helper exited unsuccessfully")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            reader.join(timeout=5)
+
+
+def build(target: str, version: str, output: Path, voice_release_dir: Path) -> Path:
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     target_root = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "codex-rs/target")).resolve()
@@ -95,6 +171,7 @@ def build(target: str, version: str, output: Path) -> Path:
         args += ["--bin", name]
     subprocess.run(args, cwd=ROOT / "codex-rs", env=env, check=True)
     stem = f"ercode-{version}-{target}"
+    base_package = output / f"{stem}-base"
     package = output / stem
     archive = output / f"{stem}.{TARGETS[target]}"
     build_package([
@@ -103,15 +180,24 @@ def build(target: str, version: str, output: Path) -> Path:
         "--entrypoint-bin", str(binaries / f"er{suffix}"),
         "--code-mode-host-bin", str(binaries / f"codex-code-mode-host{suffix}"),
         "--exec-server-bin", str(binaries / f"codex-exec-server{suffix}"),
-        "--package-dir", str(package), "--archive-output", str(archive), *resources,
+        "--package-dir", str(base_package), *resources,
     ])
+    assemble_voice(
+        base_package, voice_release_dir / f"codex-voice-host{suffix}",
+        target.replace("-musl", "-gnu"), env["STABLE_GIT_COMMIT"], package,
+        runtime=voice_release_dir / "runtime", release_version=version, entrypoint_name="er",
+    )
     validate_package(package, target, version, bwrap_digest)
+    validate_voice(package, target, version, env["STABLE_GIT_COMMIT"])
+    write_archive(package, archive, force=False)
     # Check the actual downloaded form, not just the staging directory.
     extracted = output / f"{stem}-smoke"
     shutil.unpack_archive(str(archive), str(extracted))
     validate_package(extracted, target, version, bwrap_digest)
+    validate_voice(extracted, target, version, env["STABLE_GIT_COMMIT"])
     subprocess.run([str(extracted / f"bin/er{suffix}"), "--version"], check=True)
     subprocess.run([str(extracted / f"codex-path/rg{suffix}"), "--version"], check=True)
+    smoke_voice(extracted / f"codex-resources/voice/bin/codex-voice-host{suffix}", env["STABLE_GIT_COMMIT"])
     (output / f"{archive.name}.sha256").write_text(f"{digest(archive)}  {archive.name}\n", encoding="utf-8")
     return archive
 
@@ -122,14 +208,15 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--target", choices=TARGETS)
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
+    parser.add_argument("--voice-release-dir", type=Path)
     args = parser.parse_args()
     version = release_version(args.tag)
     if args.command == "validate-tag":
         print(version)
-    elif args.target:
-        print(build(args.target, version, args.output))
+    elif args.target and args.voice_release_dir:
+        print(build(args.target, version, args.output, args.voice_release_dir.resolve()))
     else:
-        parser.error("build requires --target")
+        parser.error("build requires --target and --voice-release-dir")
 
 
 if __name__ == "__main__":
