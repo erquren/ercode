@@ -114,8 +114,17 @@ jobs:
       # Full upstream voice/Bazel/release-service infrastructure is not required.
       - name: Clippy (CLI, core, TUI)
         run: cargo clippy --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --all-targets -- -D warnings
+      - name: Build runtime helpers used by unit tests
+        run: |
+          bins=(--bin er --bin codex-code-mode-host --bin codex-exec-server)
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            bins+=(--bin codex-linux-sandbox)
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            bins+=(--bin codex-command-runner --bin codex-windows-sandbox-setup)
+          fi
+          cargo build --locked --target "${{ matrix.target }}" "${bins[@]}"
       - name: Unit tests (CLI, core, TUI)
-        run: cargo nextest run --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --lib --no-fail-fast
+        run: cargo nextest run --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --lib --bins --no-fail-fast
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

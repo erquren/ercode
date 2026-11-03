@@ -11,7 +11,7 @@ Runs on pull requests, every branch push and manual dispatch:
 
 - Rust formatting for the whole workspace.
 - Python packaging and release-helper regression tests.
-- Clippy (`--all-targets`) and unit tests (`--lib`) for `codex-cli`,
+- Clippy (`--all-targets`) and unit tests (`--lib --bins`) for `codex-cli`,
   `codex-core` and `codex-tui` on Linux x64, Windows x64 and macOS Apple Silicon.
 - Cargo uses the committed lockfile. Test reports are retained as artifacts.
 
