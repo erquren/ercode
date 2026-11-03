@@ -1,0 +1,125 @@
+# ercode fork: credential-free checks on GitHub-hosted runners.
+name: ercode CI
+
+on:
+  pull_request:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ercode-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  RUST_MIN_STACK: "8388608"
+  INSTA_UPDATE: "no"
+
+jobs:
+  format-and-packaging:
+    name: Format and packaging checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install the repository Rust toolchain
+        working-directory: codex-rs
+        run: rustup show active-toolchain
+      - name: Check Rust formatting
+        working-directory: codex-rs
+        run: cargo fmt --all -- --config imports_granularity=Item --check
+      - name: Test ercode package and release helpers
+        run: |
+          python scripts/test_build_ercode.py
+          python scripts/test_ercode_release.py
+          python -m unittest discover -s scripts/codex_package -t scripts -p 'test_*.py'
+      - name: Check whitespace
+        run: git diff --check
+
+  rust:
+    name: Rust checks and tests (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: Windows x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: macOS Apple Silicon
+            runner: macos-15
+            target: aarch64-apple-darwin
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/codex-rs/target
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+    defaults:
+      run:
+        shell: bash
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev libcap-dev libasound2-dev clang cmake bubblewrap
+      - name: Install the repository Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target add "${{ matrix.target }}"
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ercode-cargo-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: ercode-cargo-${{ matrix.target }}-
+      - uses: ./.github/actions/setup-msvc-env
+        if: runner.os == 'Windows'
+        with:
+          target: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - uses: meta/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest@0.9.103
+      # Scope is explicit: check the fork's CLI/core/TUI and their dependencies.
+      # Full upstream voice/Bazel/release-service infrastructure is not required.
+      - name: Clippy (CLI, core, TUI)
+        run: cargo clippy --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --all-targets -- -D warnings
+      - name: Unit tests (CLI, core, TUI)
+        run: cargo nextest run --locked --target "${{ matrix.target }}" -p codex-cli -p codex-core -p codex-tui --lib --no-fail-fast
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tests-${{ matrix.target }}
+          path: codex-rs/target/nextest/default/junit.xml
+          if-no-files-found: ignore

@@ -3,7 +3,9 @@
 # Installing and building ercode CLI
 
 This fork provides a terminal application, not the official Codex desktop app or
-cloud service. There is no separate published ercode installer in this branch.
+cloud service. Tagged releases can provide portable archives via the
+[ercode release workflow](../.github/workflows/README.md). They are unsigned
+archives rather than MSI/PKG installers.
 
 ## Prerequisites
 
@@ -24,24 +26,22 @@ linker and SDK; passing `--target` does not install these prerequisites.
 ```sh
 git clone https://github.com/erquren/ercode.git
 cd ercode
-git switch feature/ercode-cli-brand
 cd codex-rs
-cargo build --locked -p codex-cli --bin ercode
-cargo run --locked -p codex-cli --bin ercode -- --help
+cargo build --locked -p codex-cli --bin er
+cargo run --locked -p codex-cli --bin er -- --help
 ```
 
-Use `target/debug/ercode` on Linux/macOS or `target\debug\ercode.exe` on Windows.
+Use `target/debug/er` on Linux/macOS or `target\debug\er.exe` on Windows.
 This builds the main CLI only. Features requiring companion executables need the
-complete package described below. The `codex` binary target is retained for
-upstream build compatibility; the public command for this fork is `ercode`.
+complete package described below. The public command and Cargo binary target for this fork are `er`; no
+`codex` compatibility command is installed.
 
 ## Complete package
 
 From the repository root, use the ercode wrapper around the upstream canonical
-package builder. It builds the CLI compatibility target and required companion
-executables, then adds a byte-identical `ercode` executable copy. It keeps the
-canonical `codex` entrypoint and metadata intact so daemon installation and
-resource discovery remain compatible. Both executables use ercode branding.
+package builder. It builds the `er` CLI and required companion executables, then adds
+redistribution notices. Internal `codex` package metadata and resource names
+remain intact for daemon installation and resource discovery.
 
 Linux x86_64 with glibc:
 
@@ -49,14 +49,14 @@ Linux x86_64 with glibc:
 python3 scripts/build_ercode.py --target x86_64-unknown-linux-gnu \
   --cargo-profile release --package-dir dist/ercode-linux \
   --archive-output dist/ercode-linux.tar.gz
-./dist/ercode-linux/bin/ercode --help
+./dist/ercode-linux/bin/er --help
 ```
 
 Native Windows x86_64, in PowerShell:
 
 ```powershell
 python scripts/build_ercode.py --target x86_64-pc-windows-msvc --cargo-profile release --package-dir dist/ercode-windows --archive-output dist/ercode-windows.zip
-.\dist\ercode-windows\bin\ercode.exe --help
+.\dist\ercode-windows\bin\er.exe --help
 ```
 
 macOS Apple Silicon:
@@ -65,7 +65,7 @@ macOS Apple Silicon:
 python3 scripts/build_ercode.py --target aarch64-apple-darwin \
   --cargo-profile release --package-dir dist/ercode-macos \
   --archive-output dist/ercode-macos.tar.gz
-./dist/ercode-macos/bin/ercode --help
+./dist/ercode-macos/bin/er --help
 ```
 
 These are build instructions, not a claim that every platform has been tested.
@@ -81,18 +81,18 @@ LICENSE
 NOTICE
 licenses/                       additional repository notices
 bin/
-  ercode[.exe]
-  codex[.exe]                    internal compatibility copy
+  er[.exe]
   codex-code-mode-host[.exe]
+  codex-exec-server[.exe]
 codex-resources/                 platform-specific sandbox helpers
 codex-path/
   rg[.exe]
 ```
 
-Run the packaged `ercode` executable by its full path. Adding this package's
-`bin` directory to `PATH` also exposes its compatibility `codex` executable and
-may shadow an official Codex installation. Keep both entrypoints and all resources
-together; do not rename or delete the compatibility copy or companion executables.
+Run the packaged `er` executable by its full path and keep all companion
+executables and resources together. For a Unix installation alongside Codex,
+run `python3 scripts/install/install_er.py /path/to/extracted-package` from this
+repository. It exposes only `er`, leaving any existing `codex` command untouched.
 
 The original packaging modules remain unchanged. Their detailed prerequisites,
 resource verification, V8 overrides and signing/stripping rules are documented in
@@ -122,7 +122,7 @@ For a custom home on Linux/macOS:
 
 ```sh
 mkdir -p "$HOME/.ercode-work"
-ERCODE_HOME="$HOME/.ercode-work" /path/to/package/bin/ercode
+ERCODE_HOME="$HOME/.ercode-work" /path/to/package/bin/er
 ```
 
 For a custom home in PowerShell:
@@ -130,7 +130,7 @@ For a custom home in PowerShell:
 ```powershell
 $env:ERCODE_HOME = Join-Path $HOME '.ercode-work'
 New-Item -ItemType Directory -Force $env:ERCODE_HOME | Out-Null
-& 'C:\path\to\package\bin\ercode.exe'
+& 'C:\path\to\package\bin\er.exe'
 ```
 
 The first-run wizard asks for a **Responses-compatible** API Base URL, a model ID,
@@ -179,6 +179,6 @@ Do not mistake focused checks for a full workspace or platform validation.
 compatibility name:
 
 ```sh
-ercode -c log_dir=./.ercode-log
+er -c log_dir=./.ercode-log
 tail -F ./.ercode-log/codex-tui.log
 ```

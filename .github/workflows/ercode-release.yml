@@ -1,0 +1,173 @@
+# ercode fork: tags publish only in this fork, using its automatic token.
+name: ercode Release
+
+on:
+  push:
+    tags: ["ercode-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ercode-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_PROFILE_RELEASE_DEBUG: "0"
+
+jobs:
+  validate:
+    if: github.repository == 'erquren/ercode'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Validate release tag and package helpers
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="$(python scripts/ercode_release.py validate-tag --tag "$RELEASE_TAG")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          python scripts/test_build_ercode.py
+          python scripts/test_ercode_release.py
+
+  build:
+    name: Package ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/codex-rs/target
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      AWS_LC_SYS_NO_JITTER_ENTROPY: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - name: Install the repository Rust toolchain
+        working-directory: codex-rs
+        run: |
+          rustup show active-toolchain
+          rustup target add "${{ matrix.target }}"
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ercode-release-cargo-${{ matrix.target }}-${{ hashFiles('codex-rs/Cargo.lock', 'codex-rs/rust-toolchain.toml') }}
+          restore-keys: ercode-release-cargo-${{ matrix.target }}-
+      - name: Install Zig for Linux musl dependencies
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+      - name: Install Linux musl build tools
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          APT_UPDATE_ARGS: -o Acquire::Retries=3
+          APT_INSTALL_ARGS: --no-install-recommends
+        run: bash .github/scripts/install-musl-build-tools.sh
+      - uses: ./.github/actions/setup-msvc-env
+        if: runner.os == 'Windows'
+        with:
+          target: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+      - name: Build complete package and smoke-test extracted archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/ercode_release.py build --tag "$RELEASE_TAG" --target "$RELEASE_TARGET"
+      - name: Upload release archive and checksum
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish ercode GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify all four archives and create combined checksum file
+        working-directory: dist
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for target in x86_64-unknown-linux-musl x86_64-pc-windows-msvc aarch64-apple-darwin x86_64-apple-darwin; do
+            extension=tar.gz
+            [[ "$target" == *windows* ]] && extension=zip
+            archive="ercode-${RELEASE_VERSION}-${target}.${extension}"
+            test -s "$archive"
+            test -s "$archive.sha256"
+            sha256sum --check "$archive.sha256"
+          done
+          cat ./*.sha256 > SHA256SUMS
+      - name: Publish only after every platform succeeded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Stage assets in a draft so downloaders never see a partial release.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' > /tmp/is-draft 2>/dev/null; then
+            [[ "$(cat /tmp/is-draft)" == true ]] || { echo "Release is already published; refusing to overwrite it" >&2; exit 1; }
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "ercode $RELEASE_VERSION" --generate-notes
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
+          prerelease=false
+          [[ "$RELEASE_VERSION" == *-* ]] && prerelease=true
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease"

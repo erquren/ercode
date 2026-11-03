@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """ercode fork addition: assemble the CLI with upstream companion resources.
 
-The canonical builder still uses the internal ``codex`` package variant. An
-``ercode`` executable copy exposes the public brand, while the canonical
-entrypoint and metadata remain intact for daemon package adoption.
+The canonical builder uses the internal ``codex`` package variant and the
+public ``er`` executable. Preserve that entrypoint and metadata for daemon
+package adoption while including the required redistribution notices.
 """
 
 from __future__ import annotations
@@ -22,19 +22,17 @@ from codex_package.cli import archive_package, assemble_package, create_parser
 
 
 def brand_package(package_dir: Path, repo_root: Path = REPO_ROOT) -> None:
-    """Rebrand a newly assembled package, retaining its internal layout."""
+    """Add redistribution notices without changing the canonical package layout."""
     metadata_path = package_dir / "codex-package.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    old_entrypoint = metadata.get("entrypoint")
-    if metadata.get("variant") != "codex" or old_entrypoint not in (
-        "bin/codex",
-        "bin/codex.exe",
+    entrypoint = metadata.get("entrypoint")
+    if metadata.get("variant") != "codex" or entrypoint not in (
+        "bin/er",
+        "bin/er.exe",
     ):
         raise ValueError("Expected a canonical codex CLI package")
-    name = "ercode.exe" if old_entrypoint.endswith(".exe") else "ercode"
-    executable = package_dir / "bin" / name
-    if executable.exists():
-        raise FileExistsError(f"Refusing to overwrite {executable}")
+    if not (package_dir / entrypoint).is_file():
+        raise ValueError("Expected the canonical er CLI executable")
     # Never discard the upstream attribution when distributing the fork.
     for notice in ("LICENSE", "NOTICE"):
         shutil.copy2(repo_root / notice, package_dir / notice)
@@ -48,10 +46,6 @@ def brand_package(package_dir: Path, repo_root: Path = REPO_ROOT) -> None:
             destination = package_dir / "licenses" / notice
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-    # Daemon installation requires the canonical entrypoint in both the manifest
-    # and package. A byte-identical copy is portable to Windows, unlike symlinks,
-    # and preserves executable identity checks without changing internal paths.
-    shutil.copy2(package_dir / old_entrypoint, executable)
 
 
 def main(argv: list[str] | None = None) -> int:

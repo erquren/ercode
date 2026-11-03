@@ -16,14 +16,12 @@ Install the Rust toolchain pinned in `codex-rs/rust-toolchain.toml`, then:
 ```sh
 git clone https://github.com/erquren/ercode.git
 cd ercode
-# Until this work is merged, select the rebranding branch.
-git switch feature/ercode-cli-brand
 cd codex-rs
-cargo build --locked -p codex-cli --bin ercode
-./target/debug/ercode --help
+cargo build --locked -p codex-cli --bin er
+./target/debug/er --help
 ```
 
-On Windows, the executable is `target\debug\ercode.exe`. The command above is a
+On Windows, the executable is `target\debug\er.exe`. The command above is a
 CLI development build, not a complete distributable package. For normal use,
 build a package that also includes the code-mode host and platform resources:
 
@@ -32,12 +30,14 @@ build a package that also includes the code-mode host and platform resources:
 python3 scripts/build_ercode.py --target x86_64-unknown-linux-gnu \
   --cargo-profile release --package-dir dist/ercode-linux \
   --archive-output dist/ercode-linux.tar.gz
-./dist/ercode-linux/bin/ercode --help
+./dist/ercode-linux/bin/er --help
 ```
 
 See [installing and building](docs/install.md) for Windows, prerequisites and
-package details. No ercode npm package, installer or prebuilt release is promised
-by this branch. The upstream `@openai/codex` package installs official Codex,
+package details. The [release workflow](.github/workflows/README.md) builds portable Windows,
+Linux and macOS packages when a matching `ercode-v...` tag is pushed. No release
+is created by a normal branch push. These packages expose the `er` command; no
+ercode npm package is published. The upstream `@openai/codex` package installs official Codex,
 not this fork.
 
 ## Compatibility
