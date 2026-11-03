@@ -99,6 +99,7 @@ def main():
     parser.add_argument("--target", choices=TARGETS, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--existing-package", type=Path)
+    parser.add_argument("--rg-bin", type=Path)
     args = parser.parse_args()
     source = args.source.resolve()
     output = args.output_dir.resolve()
@@ -116,8 +117,11 @@ def main():
         shutil.copytree(existing, package)
     else:
         env = {**os.environ, "CODEX_REPO_ROOT": str(source)}
-        run([sys.executable, source / "scripts/build_codex_package.py", "--target", args.target,
-             "--cargo-profile", "release", "--package-dir", package], env=env)
+        command = [sys.executable, source / "scripts/build_codex_package.py", "--target", args.target,
+                   "--cargo-profile", "release", "--package-dir", package]
+        if args.rg_bin:
+            command.extend(["--rg-bin", args.rg_bin.resolve()])
+        run(command, env=env)
     metadata = json.loads((package / "codex-package.json").read_text())
     assert metadata["target"] == args.target and metadata["version"] == version, metadata
     assert metadata["entrypoint"] == ("bin/er.exe" if windows else "bin/er"), metadata

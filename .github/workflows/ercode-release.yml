@@ -154,9 +154,19 @@ jobs:
           shared-key: ercode-release-${{ matrix.target }}-hosted-v1
           cache-on-failure: true
           cache-workspace-crates: true
+      - name: Build static ripgrep for Linux ARM64
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        working-directory: source/codex-rs
+        run: cargo install ripgrep --version 15.2.0 --locked --target "$TARGET" --root "$RUNNER_TEMP/er-ripgrep"
       - name: Build and verify native package
         shell: bash
-        run: python packaging/scripts/release/package_er.py --source source --target "$TARGET" --output-dir dist
+        run: |
+          extra=()
+          if [[ "$TARGET" == "aarch64-unknown-linux-musl" ]]; then
+            extra+=(--rg-bin "$RUNNER_TEMP/er-ripgrep/bin/rg")
+          fi
+          python packaging/scripts/release/package_er.py --source source --target "$TARGET" --output-dir dist "${extra[@]}"
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
           name: er-${{ inputs.tag }}-${{ matrix.platform }}
