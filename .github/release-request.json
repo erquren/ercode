@@ -1,9 +1,13 @@
 {
   "tag": "0.166.0",
   "source_commit": "2b92e007fbcd1b72957c3f98b7f4017bcc6de25e",
-  "mode": "check_only",
+  "mode": "publish",
   "runs": [
     41659334563
   ],
-  "replace_draft_assets": false
+  "replace_draft_assets": true,
+  "approved_replacement_assets": {
+    "704827103": "er-0.166.0-linux-x86_64-musl.tar.gz",
+    "704829085": "er-0.166.0-linux-x86_64-musl.tar.gz.sha256"
+  }
 }
