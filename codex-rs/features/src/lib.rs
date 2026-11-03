@@ -105,6 +105,8 @@ pub enum Feature {
     ApiKeyCyberAccessPrograms,
     /// Enable Daybreak controls and automatic access-program selection in CLI clients.
     CliDaybreak,
+    /// Restrict CLI resume of attributed local threads to their creator.
+    CliResumeAccountCheck,
     /// Removed no-op; use `tui.fullscreen_transcript` instead.
     TranscriptV2,
     // Stable.
@@ -119,10 +121,14 @@ pub enum Feature {
     /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
     SecretAuthStorage,
 
-    /// Automatically start the shared local daemon for eligible interactive launches.
+    /// Removed compatibility flag. Eligible interactive launches always start or reuse the daemon.
     DaemonAutoStart,
     /// Allow the TUI to discover and select among multiple conversation backends.
     TuiMultiBackend,
+    /// Enable workspace behavior for side conversations in the owned TUI.
+    TuiWorkspace,
+    /// Render the configured status line through the experimental TUI Extensions renderer.
+    TuiExtensionsStatusLine,
     /// Enable negotiated zstd compression for app-server WebSocket and UDS connections.
     AppServerWebSocketCompression,
 
@@ -148,6 +154,8 @@ pub enum Feature {
     CodeModeHost,
     /// Use gRPC over stdio for the process-owned code-mode host.
     CodeModeHostGrpc,
+    /// Truncate output in the process-owned code-mode host before sending it to Core.
+    CodeModeHostOutputTruncation,
     /// Establish the code-mode host connection during session startup.
     CodeModePrewarm,
     /// Terminate active code mode cells when their turn is interrupted.
@@ -156,8 +164,7 @@ pub enum Feature {
     CodeModeToolDescriptionFirst,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
     CodeModeOnly,
-    /// Keep eligible MCP/app and dynamic tools deferred in exec, only in Code Mode Only.
-    /// Ignores deferLoading, omit_tools_from, and namespace skip settings.
+    /// Removed compatibility flag for strict third-party tool deferral in Code Mode Only.
     CodeModeOnlyStrictThirdPartyTools,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
@@ -188,6 +195,8 @@ pub enum Feature {
     WebSearchCached,
     /// Expose the extension-backed standalone web search tool.
     StandaloneWebSearch,
+    /// Let the host authorize MCP search independently of native search through per-turn policy.
+    HostedSearchPolicy,
     /// Use the legacy Landlock Linux sandbox fallback instead of the default
     /// bubblewrap pipeline.
     UseLegacyLandlock,
@@ -253,8 +262,12 @@ pub enum Feature {
     WakeOnAgentMessages,
     /// Preempt responses and yield foreground code-mode observations on new user input.
     InstantInterrupt,
+    /// Interrupt upstream inference when a turn is cancelled.
+    InterruptOnCancel,
     /// Enable shared discussion tools for an agent tree.
     AgentMessageBoard,
+    /// Expose a tree-scoped in-memory message board through HTTP MCP.
+    AgentMessageBoardMcp,
     /// Removed compatibility flag retained as a no-op.
     MultiAgentMode,
     /// Removed compatibility flag for the deleted agent-job tools.
@@ -273,6 +286,8 @@ pub enum Feature {
     McpConnectionSharing,
     /// Enable MCP protocol version 2026-07-28 for the host-owned Codex Apps server.
     CodexAppsMcp20260728,
+    /// Let host-owned Apps catalog reads overlap the initial tool inventory.
+    AppsEarlyResourceDiscovery,
     /// Let RMCP coordinate OAuth refresh through the configured credential store.
     McpOAuthRefreshCoordination,
     /// Enable enterprise refresh-token authorization for configured MCP resources.
@@ -287,8 +302,12 @@ pub enum Feature {
     DeferredToolWorldState,
     /// Track top-level tool definitions in world state and emit incremental context updates.
     IncrementalTools,
+    /// Suppress the model ID announcement in incremental context after a model switch.
+    SuppressModelChangeAnnouncements,
     /// Preserve inherited tool declarations in MCP-disabled prediction forks.
     PredictionPreserveParentTools,
+    /// Diff CodeModeOnly exec definitions within the incremental tool catalog.
+    IncrementalExecTools,
     /// Expose MCP model-visible namespaces without the legacy `mcp__` prefix.
     NonPrefixedMcpToolNames,
     /// Enable discoverable tool suggestions for apps.
@@ -445,6 +464,8 @@ pub enum Feature {
     AuthElicitation,
     /// Offer Amazon Bedrock setup during TUI sign-in onboarding.
     BedrockSetupWizard,
+    /// Offer Google Cloud Vertex AI setup during TUI sign-in onboarding.
+    GcpSetupWizard,
     /// Removed compatibility flag retained as a no-op.
     Personality,
     /// Enable native artifact tools.
@@ -704,6 +725,13 @@ impl Features {
                     );
                     continue;
                 }
+                "daemon_auto_start" => {
+                    self.record_legacy_usage_force(
+                        "features.daemon_auto_start",
+                        Feature::DaemonAutoStart,
+                    );
+                    continue;
+                }
                 "transcript_v2" => {
                     self.record_legacy_usage_force("features.transcript_v2", Feature::TranscriptV2);
                     continue;
@@ -826,6 +854,10 @@ fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>
         Feature::GuardianThreadContext => (
             "`[features.guardianv2].thread_context` is deprecated and ignored.".to_string(),
             Some("Thread-owned Guardian context is always enabled. Remove `thread_context` from [features.guardianv2] in config.toml, including profile overrides.".to_string()),
+        ),
+        Feature::DaemonAutoStart => (
+            "`[features].daemon_auto_start` is deprecated and ignored.".to_string(),
+            Some("Remove `daemon_auto_start` from [features] in config.toml or profile configuration files. Use `--no-daemon` to run without the shared background server.".to_string()),
         ),
         Feature::TranscriptV2 => (
             "`[features].transcript_v2` is deprecated and ignored.".to_string(),
@@ -1083,14 +1115,32 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::CliResumeAccountCheck,
+        key: "cli_resume_account_check",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::DaemonAutoStart,
         key: "daemon_auto_start",
-        stage: Stage::Stable,
+        stage: Stage::Removed,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::TuiWorkspace,
+        key: "tui_workspace",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::TuiMultiBackend,
         key: "tui_multi_backend",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::TuiExtensionsStatusLine,
+        key: "tui_extensions_statusline",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1268,6 +1318,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::CodeModeHostOutputTruncation,
+        key: "code_mode_host_output_truncation",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodeModePrewarm,
         key: "code_mode_prewarm",
         stage: Stage::UnderDevelopment,
@@ -1292,6 +1348,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::InterruptOnCancel,
+        key: "interrupt_on_cancel",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodeModeOnly,
         key: "code_mode_only",
         stage: Stage::UnderDevelopment,
@@ -1300,7 +1362,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodeModeOnlyStrictThirdPartyTools,
         key: "code_mode_only_strict_3p_tools",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Removed,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1330,6 +1392,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::StandaloneWebSearch,
         key: "standalone_web_search",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::HostedSearchPolicy,
+        key: "hosted_search_policy",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -1544,7 +1612,11 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RespectSystemProxy,
         key: "respect_system_proxy",
-        stage: Stage::UnderDevelopment,
+        stage: Stage::Experimental {
+            name: "System proxy",
+            menu_description: "Use macOS or Windows system proxy settings for Codex requests.",
+            announcement: "",
+        },
         default_enabled: false,
     },
     FeatureSpec {
@@ -1608,6 +1680,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::AgentMessageBoardMcp,
+        key: "agent_message_board_mcp",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::MultiAgentMode,
         key: "multi_agent_mode",
         stage: Stage::Removed,
@@ -1656,6 +1734,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: false,
     },
     FeatureSpec {
+        id: Feature::AppsEarlyResourceDiscovery,
+        key: "apps_early_resource_discovery",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::CodexAppsMcp20260728,
         key: "codex_apps_mcp_2026_07_28",
         stage: Stage::UnderDevelopment,
@@ -1694,8 +1778,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::DeferredToolWorldState,
         key: "deferred_tool_world_state",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::IncrementalTools,
@@ -1704,10 +1788,22 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::SuppressModelChangeAnnouncements,
+        key: "suppress_model_change_announcements",
+        stage: Stage::Stable,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::PredictionPreserveParentTools,
         key: "prediction_preserve_parent_tools",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::IncrementalExecTools,
+        key: "incremental_exec_tools",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::NonPrefixedMcpToolNames,
@@ -2124,6 +2220,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::GcpSetupWizard,
+        key: "gcp_setup_wizard",
+        stage: Stage::Stable,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::Personality,
         key: "personality",
         stage: Stage::Removed,
@@ -2240,8 +2342,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::RetainClientToolOutputs,
         key: "retain_client_tool_outputs",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::UseAgentIdentity,

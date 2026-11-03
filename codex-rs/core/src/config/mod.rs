@@ -1559,10 +1559,23 @@ impl ConfigBuilder {
 
     pub async fn build(self) -> std::io::Result<Config> {
         // Keep the large config-loading future off small runtime thread stacks.
-        Box::pin(self.build_inner()).await
+        // Avoid an additional async frame for ordinary config loads.
+        Box::pin(self.build_inner(|_, _, _| Ok(()))).await
     }
 
-    async fn build_inner(self) -> std::io::Result<Config> {
+    /// Validates the same loaded configuration that will be materialized, before provider
+    /// selection or initialization. Validation cannot alter the loaded configuration.
+    pub async fn build_with_validation(
+        self,
+        validate: impl FnOnce(&ConfigToml, &ConfigOverrides, &ConfigLayerStack) -> std::io::Result<()>,
+    ) -> std::io::Result<Config> {
+        Box::pin(self.build_inner(validate)).await
+    }
+
+    async fn build_inner(
+        self,
+        validate: impl FnOnce(&ConfigToml, &ConfigOverrides, &ConfigLayerStack) -> std::io::Result<()>,
+    ) -> std::io::Result<Config> {
         let Self {
             codex_home,
             cli_overrides,
@@ -1603,6 +1616,7 @@ impl ConfigBuilder {
         )
         .await?;
         let config_toml = config_toml_from_layers(&config_layer_stack).await?;
+        validate(&config_toml, &harness_overrides, &config_layer_stack)?;
         Config::load_config_with_layer_stack(
             LOCAL_FS.as_ref(),
             config_toml,
@@ -1621,7 +1635,7 @@ impl ConfigBuilder {
 
 async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<ConfigToml> {
     // The loader resolves paths relative to each layer's file before deserialization.
-    match layers.effective_config().try_into() {
+    match ConfigToml::try_from(layers.effective_config()) {
         Ok(config_toml) => Ok(config_toml),
         Err(err) => {
             if let Some(config_error) = codex_config::first_layer_config_error::<ConfigToml>(
@@ -1940,16 +1954,20 @@ impl Config {
                 .enabled(Feature::SkillMcpDependencyInstall),
             approval_policy: self.permissions.approval_policy.clone(),
             permission_profile: self.permissions.permission_profile().clone(),
+            host_cwd: self.cwd.clone(),
             config_layer_stack: self.config_layer_stack.clone(),
             plugins: self.plugins.clone(),
             approvals_reviewer: self.approvals_reviewer,
             environment_cwds: HashMap::new(),
             environment_use_mxc: HashMap::new(),
-            server_permission_profiles: HashMap::new(),
+            server_permissions: HashMap::new(),
             codex_self_exe: self.codex_self_exe.clone(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             use_legacy_landlock: self.features.use_legacy_landlock(),
             apps_enabled: self.features.enabled(Feature::Apps),
+            apps_early_resource_discovery: self
+                .features
+                .enabled(Feature::AppsEarlyResourceDiscovery),
             prefix_mcp_tool_names: self.prefix_mcp_tool_names(),
             non_prefixed_mcp_tool_servers: if self
                 .features
@@ -2227,8 +2245,7 @@ pub fn deserialize_config_toml_with_base(
     // This guard ensures that any relative paths that is deserialized into an
     // [AbsolutePathBuf] is resolved against `config_base_dir`.
     let _guard = AbsolutePathBufGuard::new(config_base_dir);
-    root_value
-        .try_into()
+    ConfigToml::try_from(root_value)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
@@ -3442,6 +3459,7 @@ impl Config {
             check_for_update_on_startup: _,
             allow_login_shell: _,
             feedback: _,
+            otel: _,
             approval_policy: mut constrained_approval_policy,
             approvals_reviewer: mut constrained_approvals_reviewer,
             auto_review_required_models: _,
@@ -4902,11 +4920,7 @@ impl Config {
         !matches!(
             self.permissions.permission_profile(),
             PermissionProfile::Disabled
-        ) && self
-            .config_layer_stack
-            .requirements_toml()
-            .network
-            .is_some()
+        ) && self.config_layer_stack.requirements().network.is_some()
     }
 
     /// Resolves a named permission profile from effective config and managed requirements.
@@ -4914,11 +4928,8 @@ impl Config {
         &self,
         profile_name: &str,
     ) -> std::io::Result<PermissionProfileToml> {
-        let cfg: ConfigToml = self
-            .config_layer_stack
-            .effective_config()
-            .try_into()
-            .map_err(|err| {
+        let cfg =
+            ConfigToml::try_from(self.config_layer_stack.effective_config()).map_err(|err| {
                 std::io::Error::new(
                     ErrorKind::InvalidInput,
                     format!(
@@ -4942,11 +4953,8 @@ impl Config {
     ) -> std::io::Result<Option<NetworkProxySpec>> {
         let profile_allows_network_proxy =
             profile_allows_configured_network_proxy(permission_profile);
-        let cfg: ConfigToml = self
-            .config_layer_stack
-            .effective_config()
-            .try_into()
-            .map_err(|err| {
+        let cfg =
+            ConfigToml::try_from(self.config_layer_stack.effective_config()).map_err(|err| {
                 std::io::Error::new(
                     ErrorKind::InvalidInput,
                     format!(

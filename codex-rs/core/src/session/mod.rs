@@ -12,6 +12,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use crate::RestrictRootCapabilities;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentConfigUpdate;
@@ -253,7 +254,7 @@ mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
-mod inject;
+pub(crate) mod inject;
 mod reasoning_effort;
 mod submission;
 pub(crate) use reasoning_effort::RequestEffortUsage;
@@ -322,6 +323,7 @@ use crate::shell;
 use crate::state::AcceptedUserInputResponse;
 use crate::state::AutoCompactWindowIds;
 use crate::state::AutoCompactWindowSnapshot;
+use crate::state::PendingApproval;
 use crate::state::PendingRequestPermissions;
 use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
@@ -371,6 +373,7 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::mcp::ClientMcpExtensions;
+use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
 use codex_protocol::models::LocalImagePreparation;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
@@ -417,8 +420,19 @@ use codex_utils_stream_parser::ProposedPlanSegment;
 /// Whether reported usage updates the installed context baseline or only spending.
 #[derive(Clone, Copy)]
 pub(crate) enum TokenUsageContext {
-    Sampling,
+    Sampling {
+        includes_reasoning: bool,
+        /// Input history length before the response, including requests with no output items.
+        input_item_count: usize,
+    },
     SpendingOnly,
+}
+
+/// Which active turn can service a network approval.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetworkApprovalTurn {
+    Originating,
+    AnyActive,
 }
 
 /// Queue and lifecycle endpoints for a running [`Session`].
@@ -470,6 +484,7 @@ pub(crate) enum CompactedHistoryInstallation<'a> {
         prefix: CompactionPrefix,
         prefix_context: Vec<ResponseItem>,
         initial_context: Vec<ResponseItemEnvelope>,
+        reset_world_state_sections: Vec<&'static str>,
         model_info: &'a ModelInfo,
         compaction_response_id: String,
         reviewer_compaction_hash: Option<String>,
@@ -699,15 +714,22 @@ impl Session {
             instructions
         };
         let exec_policy = if isolation == codex_extension_api::SessionIsolation::Isolated {
-            let managed_policy = config
+            let source_requirements = config
                 .config_layer_stack
                 .requirements()
                 .exec_policy
                 .as_deref()
+                .cloned()
+                .map(Arc::new);
+            let managed_policy = source_requirements
+                .as_deref()
                 .map_or_else(codex_execpolicy::Policy::empty, |policy| {
                     policy.as_ref().clone()
                 });
-            Arc::new(ExecPolicyManager::new(Arc::new(managed_policy)))
+            Arc::new(ExecPolicyManager::from_snapshot(
+                Arc::new(managed_policy),
+                source_requirements,
+            ))
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
         } else {
@@ -921,6 +943,13 @@ impl Session {
             &model_info,
         );
         let storage_originator = AuthStorageOriginator::from_client_name(&originator);
+        let root_capabilities_restricted = session_source.is_non_root_agent()
+            || thread_extension_init
+                .get::<RestrictRootCapabilities>()
+                .is_some();
+        let enable_full_access_form_input = !root_capabilities_restricted
+            && matches!(thread_source.as_ref(), Some(ThreadSource::User))
+            && client_mcp_extensions.contains(OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID);
         let session_configuration = SessionConfiguration {
             turn_extension_init,
             provider: create_model_provider(
@@ -956,6 +985,7 @@ impl Session {
             app_server_client_version: None,
             trusted_guardian_reviewer,
             session_source,
+            root_capabilities_restricted,
             history_mode,
             forked_from_thread_id,
             parent_thread_id,
@@ -1056,6 +1086,10 @@ impl Session {
         if let Some(startup) = startup {
             let _ = startup.io.set(io.clone());
             startup.persistence.lock().await.commit();
+        }
+        // A required MCP server must not block startup waiting for form input.
+        if enable_full_access_form_input {
+            session.services.mcp_runtime.enable_full_access_form_input();
         }
         Ok((session, io))
     }
@@ -1569,7 +1603,7 @@ impl Session {
 
     pub(crate) async fn get_total_token_usage(&self) -> i64 {
         let state = self.state.lock().await;
-        state.get_total_token_usage(state.server_reasoning_included())
+        state.get_total_token_usage()
     }
 
     pub(crate) async fn auto_compact_window_snapshot(&self) -> AutoCompactWindowSnapshot {
@@ -1577,11 +1611,9 @@ impl Session {
         state.auto_compact_window_snapshot()
     }
 
-    pub(crate) async fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
+    pub(crate) async fn estimated_tokens_since_last_usage(&self) -> i64 {
         let state = self.state.lock().await;
-        state
-            .history
-            .estimated_tokens_after_last_model_generated_item()
+        state.history.estimated_tokens_since_last_usage()
     }
 
     pub(crate) async fn total_token_usage(&self) -> Option<TokenUsage> {
@@ -1909,9 +1941,21 @@ impl Session {
             .zip(metadata)
             .map(|(item, metadata)| ResponseItemEnvelope { item, metadata })
             .collect();
-        let context = crate::guardian::GuardianReviewContext::from(turn_context);
-        let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
-        let reviewer_compaction_hash = reviewer.comp_hash.clone();
+        // Ordinary replay needs no reviewer or network refresh. Only an opaque
+        // checkpoint can make reconstruction depend on reviewer compatibility.
+        let reviewer_compaction_hash = if codex_history::CompactionCheckpoint::latest(&history)
+            .is_some_and(codex_history::CompactionCheckpoint::is_usable)
+            && turn_context
+                .config
+                .features
+                .enabled(Feature::GuardianReuseParentCompaction)
+        {
+            let context = crate::guardian::GuardianReviewContext::from(turn_context);
+            let (_, reviewer) = crate::guardian::resolve_review_model(self, &context).await;
+            reviewer.comp_hash.clone()
+        } else {
+            None
+        };
         {
             let mut state = self.state.lock().await;
             state.replace_annotated_history(
@@ -2499,6 +2543,13 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext, task_kind: TaskKind) {
+        if turn_context
+            .extension_data
+            .get::<crate::tasks::HostTurnStarted>()
+            .is_some()
+        {
+            return;
+        }
         let event = TurnStartedEvent {
             turn_attribution: (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
             turn_id: turn_context.sub_id.clone(),
@@ -2819,6 +2870,24 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_item_started(&self, turn_context: &TurnContext, item: &TurnItem) {
+        if matches!(
+            item,
+            TurnItem::WebSearch(_)
+                | TurnItem::Extension(codex_extension_items::ExtensionItem::WebSearch(_))
+        ) && let Some(usage) = turn_context
+            .extension_data
+            .get::<crate::model_search::SearchTurnUsage>()
+        {
+            // This turn selected Search MCP. Pin native only when a fallback call starts.
+            crate::model_search::SearchOwner::admit(
+                &self.services.thread_extension_data,
+                codex_protocol::openai_models::WebSearchProvider::Standalone,
+            );
+            usage.record(
+                turn_context,
+                codex_protocol::openai_models::WebSearchProvider::Standalone,
+            );
+        }
         let started_at_ms = turn_context
             .turn_timing_state
             .record_item_started(item.id(), now_unix_timestamp_ms())
@@ -2839,6 +2908,20 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         item: TurnItem,
+    ) {
+        self.emit_turn_item_completed_with_token_count(
+            turn_context,
+            item,
+            /*content_token_count*/ None,
+        )
+        .await;
+    }
+
+    pub(crate) async fn emit_turn_item_completed_with_token_count(
+        &self,
+        turn_context: &TurnContext,
+        item: TurnItem,
+        content_token_count: Option<u64>,
     ) {
         record_turn_ttfm_metric(turn_context, &item).await;
         for contributor in self.services.extensions.turn_lifecycle_contributors() {
@@ -2871,6 +2954,7 @@ impl Session {
                 thread_id: self.thread_id,
                 turn_id: turn_context.sub_id.clone(),
                 item,
+                content_token_count,
                 started_at_ms: Some(started_at_ms),
                 completed_at_ms,
             }),
@@ -3050,6 +3134,22 @@ impl Session {
         timing
     }
 
+    /// Keep tool results paused and attribute a queued network prompt to its triggering call.
+    pub(crate) fn hold_queued_network_approval(
+        &self,
+        turn: &TurnContext,
+        call_id: Option<&str>,
+    ) -> (
+        crate::elicitation::ElicitationRegistration,
+        Option<codex_direct_tool_timing::ToolBlockingTimingGuard>,
+    ) {
+        let owner = self.user_wait_timing_owner(turn, call_id);
+        (
+            self.services.elicitations.register(),
+            self.start_user_wait_timing(turn, owner.as_deref()),
+        )
+    }
+
     /// Emit an exec approval request event and await the user's decision.
     ///
     /// The request is keyed by `call_id` + `approval_id` so matching responses
@@ -3077,12 +3177,13 @@ impl Session {
         command: Vec<String>,
         cwd: PathUri,
         reason: Option<String>,
-        network_approval_context: Option<NetworkApprovalContext>,
+        network_approval: Option<(NetworkApprovalContext, NetworkApprovalTurn)>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
         additional_permissions: Option<AdditionalPermissionProfile>,
         available_decisions: Option<Vec<ReviewDecision>>,
         plugin_attribution_override: Option<PluginCommandAttribution>,
     ) -> ReviewDecision {
+        let (network_approval_context, turn_binding) = network_approval.unzip();
         let user_wait_owner = self.user_wait_timing_owner(turn_context, timing_call_id);
         let _elicitation = self.services.elicitations.register();
         //  command-level approvals use `call_id`.
@@ -3090,14 +3191,40 @@ impl Session {
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, rx_approve) = oneshot::channel();
-        let prev_entry = {
+        let (prev_entry, _network_prompt) = {
             let mut active = self.active_turn.lock().await;
+            // The proxy reviews with the active turn's settings. A sandbox retry
+            // keeps its originating step's settings even after a background cell yields.
+            if let Some(binding) = turn_binding
+                && active
+                    .as_ref()
+                    .and_then(|turn| turn.task.as_ref())
+                    .is_none_or(|task| {
+                        binding == NetworkApprovalTurn::Originating
+                            && task.turn_context.sub_id != turn_context.sub_id
+                    })
+            {
+                return ReviewDecision::Abort;
+            }
             match active.as_mut() {
                 Some(at) => {
                     let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_approval(effective_approval_id.clone(), tx_approve)
+                    let prev = ts.insert_pending_approval(
+                        effective_approval_id.clone(),
+                        tx_approve,
+                        kind,
+                        turn_context.sub_id.clone(),
+                    );
+                    let prompt = network_approval_context.as_ref().map(|_| {
+                        ts.track_network_prompt(
+                            &self.tx_event,
+                            &turn_context.sub_id,
+                            &effective_approval_id,
+                        )
+                    });
+                    (prev, prompt)
                 }
-                None => None,
+                None => (None, None),
             }
         };
         if prev_entry.is_some() {
@@ -3181,7 +3308,12 @@ impl Session {
             match active.as_mut() {
                 Some(at) => {
                     let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_approval(approval_id.clone(), tx_approve)
+                    ts.insert_pending_approval(
+                        approval_id.clone(),
+                        tx_approve,
+                        ExecApprovalKind::Command,
+                        turn_context.sub_id.clone(),
+                    )
                 }
                 None => None,
             }
@@ -3258,6 +3390,7 @@ impl Session {
         let context = sandbox_context.policy_context();
         {
             let approval_context = ApprovalContext {
+                exec_requirement: None,
                 review_context: crate::guardian::GuardianReviewContext::from(step_context),
                 cancellation_token: Some(cancellation_token.clone()),
                 call_id: call_id.clone(),
@@ -3599,24 +3732,32 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
     )]
+    async fn take_pending_approval(
+        &self,
+        approval_id: &str,
+        expected_turn_id: Option<&str>,
+    ) -> Option<(PendingApproval, Option<String>)> {
+        let active = self.active_turn.lock().await;
+        let turn = active.as_ref()?;
+        // A live Cancel interrupts the turn servicing the prompt, which can differ from its origin.
+        let turn_id = turn.task.as_ref().map(|task| &task.turn_context.sub_id);
+        let pending = turn
+            .turn_state
+            .lock()
+            .await
+            .remove_pending_approval(approval_id, expected_turn_id)?;
+        (!pending.sender.is_closed()).then(|| (pending, turn_id.cloned()))
+    }
+
     pub async fn notify_approval(&self, approval_id: &str, decision: ReviewDecision) {
-        let entry = {
-            let mut active = self.active_turn.lock().await;
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    ts.remove_pending_approval(approval_id)
-                }
-                None => None,
-            }
-        };
-        match entry {
-            Some(tx_approve) => {
-                tx_approve.send(decision).ok();
-            }
-            None => {
-                warn!("No pending approval found for call_id: {approval_id}");
-            }
+        if let Some((pending, _)) = self
+            .take_pending_approval(approval_id, /*expected_turn_id*/ None)
+            .await
+        {
+            let decision = pending.validate(decision);
+            let _ = pending.sender.send(decision);
+        } else {
+            warn!("No pending approval found for call_id: {approval_id}");
         }
     }
 
@@ -3793,6 +3934,10 @@ impl Session {
         // Preserve any existing tool-specific override.
         let policy: codex_utils_output_truncation::TruncationPolicy =
             model_info.truncation_policy.into();
+        crate::model_search::SearchOwner::checkpoint(
+            &self.services.thread_extension_data,
+            &mut items,
+        );
         for envelope in &mut items {
             if matches!(
                 envelope.item,
@@ -4014,7 +4159,7 @@ impl Session {
 
     /// Prepares a candidate step without replacing the active turn's retained context.
     /// The caller must retain it explicitly if it is selected for execution.
-    async fn capture_speculative_step_context(
+    pub(crate) async fn capture_speculative_step_context(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         cancellation_token: &CancellationToken,
@@ -4122,7 +4267,7 @@ impl Session {
             }
             let extension_data =
                 codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
-            extension_data.insert_arc(Arc::clone(&settings.model_info));
+            extension_data.insert_arc(Arc::clone(&settings.model_info.model));
             if let Some(messages) = settings
                 .model_info
                 .model_messages
@@ -4139,16 +4284,51 @@ impl Session {
             if let Some(messages) = model_messages.notes() {
                 extension_data.insert(messages.clone());
             }
+            let mut required_servers = required_servers.to_vec();
+            if settings.model_info.web_search_provider
+                == Some(codex_protocol::openai_models::WebSearchProvider::SearchMcp)
+                && turn_context.apps_enabled()
+                && !turn_context.config.requires_native_search()
+                && (turn_context.config.web_search_mode.value()
+                    != codex_protocol::config_types::WebSearchMode::Disabled
+                    || turn_context
+                        .config
+                        .features
+                        .enabled(codex_features::Feature::HostedSearchPolicy))
+            {
+                required_servers.push(codex_mcp::CODEX_APPS_MCP_SERVER_NAME.to_owned());
+            }
             let (mcp, prepared_recommendations) = tokio::join!(
                 // MCP refresh can be large; keep it off the sampling request's stack.
                 Box::pin(self.mcp_runtime_for_step(
                     turn_context.as_ref(),
                     &selected_capability_roots,
-                    required_servers,
+                    &required_servers,
                     required_plugins,
                 )),
                 turn::prepare_tool_recommendations(self.as_ref(), turn_context.as_ref()),
             );
+            let search = crate::model_search::resolve(
+                turn_context.as_ref(),
+                &settings,
+                &mcp,
+                &self.services,
+            )
+            .await;
+            extension_data.insert(match &search {
+                Some(crate::model_search::ModelSearch::Native { mode, .. }) => *mode,
+                _ => turn_context.config.web_search_mode.value(),
+            });
+            let mcp = if let Some(search) = search {
+                let binding = match &search {
+                    crate::model_search::ModelSearch::Hosted { binding, .. } => Arc::clone(binding),
+                    _ => mcp,
+                };
+                extension_data.insert(search);
+                binding
+            } else {
+                mcp
+            };
             extension_data.insert(selected_capability_roots);
             // A step keeps the plugins from the environments it captured, even if shared MCP
             // moves on to another environment. Its skill tools and the model use this same copy.
@@ -4218,6 +4398,7 @@ impl Session {
         }
         let (executor_hook_sources, mcp, tool_router, extension_data) = prepared_tools??;
         Ok(Arc::new(StepContext {
+            serving_assessment: None,
             preempt: turn_context
                 .config
                 .features
@@ -4228,7 +4409,7 @@ impl Session {
             token_budget,
             session_telemetry,
             turn: turn_context,
-            extension_data,
+            extension_data: Arc::new(extension_data),
             environments,
             inherited_environments,
             executor_hook_sources,
@@ -4416,6 +4597,10 @@ impl Session {
             CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
             CompactedHistoryInstallation::Prefix { model_info, .. } => &model_info.comp_hash,
         };
+        crate::model_search::SearchOwner::checkpoint(
+            &self.services.thread_extension_data,
+            &mut items,
+        );
         let mcp_revision = self
             .services
             .executed_tool_calls
@@ -4450,6 +4635,7 @@ impl Session {
                     prefix,
                     prefix_context,
                     initial_context,
+                    reset_world_state_sections,
                     model_info,
                     compaction_response_id,
                     reviewer_compaction_hash,
@@ -4485,6 +4671,11 @@ impl Session {
                     // The unchanged suffix already contains updates through this baseline.
                     if let Some(checkpoint) = state.history.world_state_checkpoint() {
                         world_state_baseline = WorldStateSnapshot::from(&checkpoint.state);
+                    }
+                    // Volatile sections must refresh in the new window even if their
+                    // previous messages and comparison state survived in the suffix.
+                    for section_id in reset_world_state_sections {
+                        world_state_baseline.remove_section(section_id);
                     }
                     // Prefix replacement already retains all edits in the live suffix.
                     let input_goal_ids = Default::default();
@@ -4894,7 +5085,13 @@ impl Session {
             if next_item.is_none()
                 && let Some(recommended_plugins) = recommended_plugin_candidates
                     .as_deref()
-                    .and_then(RecommendedPluginsInstructions::from_plugins)
+                    .and_then(|plugins| {
+                        RecommendedPluginsInstructions::from_plugins(
+                            plugins,
+                            &ResolvedModelMessages::from_model(&step_context.settings.model_info)
+                                .plugin_recommendations(),
+                        )
+                    })
             {
                 developer_sections.push(recommended_plugins.render_fragment());
             }
@@ -5232,13 +5429,17 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         token_usage: Option<&TokenUsage>,
+        includes_reasoning: bool,
     ) -> CodexResult<()> {
         let result = self
             .record_token_usage_info(
                 turn_context,
                 &turn_context.initial_settings,
                 token_usage,
-                TokenUsageContext::Sampling,
+                TokenUsageContext::Sampling {
+                    includes_reasoning,
+                    input_item_count: 0,
+                },
             )
             .await;
         self.send_token_count_event(turn_context).await;
@@ -5300,10 +5501,15 @@ impl Session {
             let token_info = {
                 let mut state = self.state.lock().await;
                 match context {
-                    TokenUsageContext::Sampling => {
+                    TokenUsageContext::Sampling {
+                        includes_reasoning,
+                        input_item_count,
+                    } => {
                         state.update_token_info_from_usage(
                             token_usage,
                             turn_context.model_context_window(),
+                            includes_reasoning,
+                            input_item_count,
                         );
                         if matches!(
                             turn_context.config.model_auto_compact_token_limit_scope,
@@ -5316,6 +5522,7 @@ impl Session {
                     TokenUsageContext::SpendingOnly => {
                         let mut info = state.token_info().unwrap_or(TokenUsageInfo {
                             total_token_usage: TokenUsage::default(),
+                            last_usage_includes_reasoning: None,
                             last_token_usage: TokenUsage::default(),
                             model_context_window: turn_context.model_context_window(),
                         });
@@ -5324,6 +5531,7 @@ impl Session {
 
                         // Contributors receive the reported usage; stored context stays unchanged.
                         info.last_token_usage = token_usage.clone();
+                        info.last_usage_includes_reasoning = None;
                         info.model_context_window = turn_context
                             .model_context_window()
                             .or(info.model_context_window);
@@ -5342,7 +5550,9 @@ impl Session {
                     token_usage,
                 );
             }
-            let budget_result = self.record_rollout_budget_usage(token_usage).await;
+            let budget_result = self
+                .record_rollout_budget_usage(&turn_context.sub_id, token_usage)
+                .await;
             if let Some(token_info) = token_info.as_ref() {
                 for contributor in self.services.extensions.token_usage_contributors() {
                     contributor
@@ -5372,6 +5582,7 @@ impl Session {
             let mut state = self.state.lock().await;
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
                 total_token_usage: TokenUsage::default(),
+                last_usage_includes_reasoning: None,
                 last_token_usage: TokenUsage::default(),
                 model_context_window: None,
             });
@@ -5390,9 +5601,11 @@ impl Session {
                 info.model_context_window = Some(model_context_window);
             }
 
-            state.set_token_info(Some(info));
             // The local estimate already includes every retained reasoning item.
-            state.set_server_reasoning_included(/*included*/ true);
+            info.last_usage_includes_reasoning = Some(true);
+            state
+                .history
+                .set_token_info_with_boundary(Some(info), history.raw_items().len());
         }
         self.set_auto_compact_window_estimated_prefill_for_scope(
             turn_context,
@@ -5429,11 +5642,6 @@ impl Session {
     {
         let mut state = self.state.lock().await;
         state.record_mcp_dependency_prompted(names);
-    }
-
-    pub(crate) async fn set_server_reasoning_included(&self, included: bool) {
-        let mut state = self.state.lock().await;
-        state.set_server_reasoning_included(included);
     }
 
     pub(crate) async fn send_token_count_event(&self, turn_context: &TurnContext) {

@@ -4,6 +4,7 @@ use super::token_budget::resolve_token_budget;
 use super::*;
 use crate::config::TokenBudgetConfig;
 use crate::cyber_access_program;
+use crate::environment_selection::EnvironmentAttachment;
 use crate::environment_selection::EnvironmentConfigOrigin;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::exec_policy::AllowPrefixRules;
@@ -26,8 +27,9 @@ use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::models::AdditionalPermissionProfile;
+use codex_protocol::openai_models::CatalogModel;
 use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
-use codex_protocol::openai_models::ModelInfo;
+use codex_protocol::openai_models::ModelOrigin;
 use codex_protocol::permissions::RawFileSystemSandboxPolicy;
 use codex_protocol::protocol::EnvironmentConfig;
 use codex_protocol::protocol::EnvironmentConfigState;
@@ -68,7 +70,7 @@ pub(crate) struct ShellSnapshotCacheKey {
 pub(crate) struct TurnEnvironment {
     pub(crate) selection: TurnEnvironmentSelection,
     pub(crate) config_origin: EnvironmentConfigOrigin,
-    pub(crate) environment: Arc<Environment>,
+    pub(crate) attachment: Arc<EnvironmentAttachment>,
     /// Cached from the selected executor; `None` means it did not report one.
     pub(crate) user_home_dir: Option<PathUri>,
     /// Cached from the selected executor; `None` means it did not report them.
@@ -83,17 +85,31 @@ pub(crate) struct TurnEnvironment {
 }
 
 impl TurnEnvironment {
+    #[cfg(test)]
     pub(crate) fn new(
         selection: TurnEnvironmentSelection,
         config_origin: EnvironmentConfigOrigin,
         environment: Arc<Environment>,
         shell: Option<shell::Shell>,
     ) -> Self {
+        let (attachment, guard, _) =
+            EnvironmentAttachment::new(&selection.environment_id, environment);
+        // Standalone test snapshots have no thread selection to signal detach.
+        guard.disarm();
+        Self::from_attachment(selection, config_origin, attachment, shell)
+    }
+
+    pub(crate) fn from_attachment(
+        selection: TurnEnvironmentSelection,
+        config_origin: EnvironmentConfigOrigin,
+        attachment: Arc<EnvironmentAttachment>,
+        shell: Option<shell::Shell>,
+    ) -> Self {
         debug_assert!(matches!(selection.config, EnvironmentConfigState::Ready(_)));
         Self {
             selection,
             config_origin,
-            environment,
+            attachment,
             user_home_dir: None,
             temporary_directories: None,
             shell,
@@ -103,6 +119,10 @@ impl TurnEnvironment {
             shell_snapshot_cache: Arc::default(),
             shell_snapshot_v2_supported: false,
         }
+    }
+
+    pub(crate) fn environment(&self) -> &Arc<Environment> {
+        &self.attachment.environment
     }
 
     pub(crate) fn config(&self) -> &EnvironmentConfig {
@@ -181,7 +201,7 @@ impl TurnEnvironment {
                     .as_ref()
                     .clone()
                     .build(
-                        Arc::clone(&self.environment),
+                        Arc::clone(self.environment()),
                         PathUri::from_abs_path(cwd),
                         Some(shell.clone()),
                         use_login_shell,
@@ -225,7 +245,7 @@ impl TurnEnvironment {
         additional_permissions: Option<AdditionalPermissionProfile>,
     ) -> impl EnvironmentAccess + '_ {
         FileSystemEnvironmentAccessor::new(
-            self.environment.filesystem_ref(),
+            self.environment().filesystem_ref(),
             self.sandbox_context(additional_permissions),
         )
     }
@@ -263,7 +283,7 @@ impl TurnEnvironment {
         &self,
     ) -> codex_file_system::WindowsSandboxSelection {
         let config = self.config();
-        if self.environment.is_remote() {
+        if self.environment().is_remote() {
             executor_windows_sandbox_selection(
                 config.windows_sandbox_type,
                 config.windows_sandbox_level,
@@ -298,7 +318,7 @@ impl std::fmt::Debug for TurnEnvironment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TurnEnvironment")
             .field("environment_id", &self.selection.environment_id)
-            .field("environment", &self.environment)
+            .field("environment", self.environment())
             .field("cwd", &self.selection.cwd)
             .field("workspace_roots", &self.config().workspace_roots)
             .field("user_home_dir", &self.user_home_dir)
@@ -346,6 +366,7 @@ pub struct TurnContext {
     pub(crate) session_telemetry: SessionTelemetry,
     pub(crate) provider: SharedModelProvider,
     pub(crate) session_source: SessionSource,
+    pub(crate) root_capabilities_restricted: bool,
     pub(crate) history_mode: ThreadHistoryMode,
     pub(crate) parent_thread_id: Option<ThreadId>,
     pub(crate) originator: String,
@@ -436,6 +457,7 @@ impl TurnContext {
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
+            root_capabilities_restricted: self.root_capabilities_restricted,
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
             originator: self.originator.clone(),
@@ -538,13 +560,13 @@ impl TurnContext {
     }
 
     /// Captures current model metadata without preparing a step.
-    pub(crate) fn capture_current_model_info(&self) -> Arc<ModelInfo> {
+    pub(crate) fn capture_current_model_info(&self) -> Arc<CatalogModel> {
         Arc::clone(&self.next_step_settings.load().model_info)
     }
 
     /// Legacy: returns the frozen initial-turn model metadata.
     /// Step-scoped consumers should use their captured `StepContext::settings`.
-    pub(crate) fn model_info(&self) -> &Arc<ModelInfo> {
+    pub(crate) fn model_info(&self) -> &Arc<CatalogModel> {
         &self.initial_settings.model_info
     }
 
@@ -847,6 +869,7 @@ impl TurnContext {
             session_telemetry,
             provider: self.provider.clone(),
             session_source: self.session_source.clone(),
+            root_capabilities_restricted: self.root_capabilities_restricted,
             history_mode: self.history_mode,
             parent_thread_id: self.parent_thread_id,
             originator: self.originator.clone(),
@@ -1131,6 +1154,7 @@ impl Session {
             session_telemetry: session_telemetry_for_context,
             provider,
             session_source,
+            root_capabilities_restricted: session_configuration.root_capabilities_restricted,
             history_mode: session_configuration.history_mode,
             parent_thread_id: session_configuration.parent_thread_id,
             originator: session_configuration.originator.clone(),
@@ -1295,7 +1319,7 @@ impl Session {
                 // Only execution and initial context creation publish model metadata.
                 self.services
                     .thread_extension_data
-                    .insert(model_info.clone());
+                    .insert_arc(Arc::clone(&model_info.model));
                 self.resolve_multi_agent_version_for_model(&model_info, &per_turn_config)
             }
             TurnContextBuildMode::StartupPrewarm | TurnContextBuildMode::InjectItems => {
@@ -1386,10 +1410,8 @@ impl Session {
         turn_context.realtime_active = self.conversation.running_state().await.is_some();
 
         turn_context.final_output_json_schema = options.final_output_json_schema;
-        turn_context.cyber_access_program = cyber_access_program::for_provider(
-            &turn_context.config.model_provider_id,
-            options.cyber_access_program,
-        );
+        turn_context.cyber_access_program =
+            cyber_access_program::for_provider(&turn_context.config, options.cyber_access_program);
         // Tool observers retain this turn's selection even after a later turn starts.
         if let Some(program) = turn_context.cyber_access_program {
             turn_context.extension_data.insert(program);
@@ -1409,7 +1431,7 @@ impl Session {
     }
 
     pub(crate) async fn maybe_emit_model_warnings_for_turn(&self, tc: &TurnContext) {
-        if tc.model_info().used_fallback_model_metadata {
+        if tc.model_info().origin == ModelOrigin::Synthetic {
             self.send_event(
                 tc,
                 EventMsg::Warning(WarningEvent {

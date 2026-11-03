@@ -827,22 +827,27 @@ async fn session_info_preserves_styled_tooltip_links() {
 }
 
 #[tokio::test]
-async fn session_info_first_event_suppresses_tooltips_and_nux() {
+async fn session_info_first_event_respects_tooltip_preference() {
     let config = test_config().await;
-    let cell = new_session_info(
-        &config,
-        &crate::local_settings::LocalSettings::from(&config),
-        "gpt-5",
-        "gpt-5",
-        &session_configured_event("gpt-5"),
-        /*is_first_event*/ true,
-        Some("Model just became available".to_string()),
-        Some(PlanType::Free),
-    );
+    let mut local_settings = crate::local_settings::LocalSettings::from(&config);
+    for show_tooltips in [true, false] {
+        local_settings.tui.show_tooltips = show_tooltips;
+        let cell = new_session_info(
+            &config,
+            &local_settings,
+            "requested-model",
+            "gpt-5",
+            &session_configured_event("gpt-5"),
+            /*is_first_event*/ true,
+            Some("Model just became available".to_string()),
+            Some(PlanType::Free),
+        );
 
-    let rendered = render_transcript(&cell).join("\n");
-    assert!(!rendered.contains("Model just became available"));
-    assert!(rendered.contains("To get started"));
+        let rendered = render_transcript(&cell).join("\n");
+        assert_eq!(rendered.contains("To get started"), show_tooltips);
+        assert!(!rendered.contains("Model just became available"));
+        assert!(!rendered.contains("model changed:"));
+    }
 }
 
 #[tokio::test]
@@ -2968,15 +2973,26 @@ fn deprecation_notice_renders_summary_with_details() {
 }
 
 #[test]
-fn legacy_zsh_migration_notice_snapshot() {
-    let mut features = codex_features::Features::default();
-    features.record_legacy_usage_force("shell_zsh_fork", codex_features::Feature::ShellZshFork);
-    let usage = features
-        .legacy_feature_usages()
-        .next()
-        .expect("migration notice");
-    let cell = new_deprecation_notice(usage.summary.clone(), usage.details.clone());
-    insta::assert_snapshot!(render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n"));
+fn legacy_feature_migration_notices() {
+    for (key, snapshot) in [
+        ("shell_zsh_fork", "legacy_zsh_migration_notice_snapshot"),
+        ("daemon_auto_start", "daemon_auto_start_migration_notice"),
+    ] {
+        let mut features = codex_features::Features::with_defaults();
+        features.apply_map(&std::collections::BTreeMap::from([(
+            key.to_string(),
+            false,
+        )]));
+        let usage = features
+            .legacy_feature_usages()
+            .next()
+            .expect("migration notice");
+        let cell = new_deprecation_notice(usage.summary.clone(), usage.details.clone());
+        insta::assert_snapshot!(
+            snapshot,
+            render_lines(&cell.transcript_lines(/*width*/ 80)).join("\n")
+        );
+    }
 }
 
 #[test]

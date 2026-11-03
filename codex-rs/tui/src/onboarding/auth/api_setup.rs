@@ -279,7 +279,7 @@ impl AuthModeWidget {
             let SignInState::ApiKeyEntry(state) = &mut *guard else {
                 return false;
             };
-            if state.saving {
+            if state.saving || event.kind != KeyEventKind::Press {
                 return true;
             }
             if keys::CANCEL.is_pressed(*event) {

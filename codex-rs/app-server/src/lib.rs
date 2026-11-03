@@ -136,6 +136,7 @@ mod model_catalog;
 mod models;
 mod models_refresh_worker;
 mod notification_media;
+mod otel_config;
 mod otel_reloader;
 mod outgoing_message;
 mod plugin_config_reload;
@@ -672,7 +673,7 @@ pub async fn run_main_with_transport_options(
         Ok(state_db_init) => state_db_init,
         Err(err) => {
             return Err(std::io::Error::other(format!(
-                "failed to initialize sqlite state runtime under {}: {err}",
+                "failed to initialize sqlite state runtime under {}: {err:#}",
                 config.sqlite_config().home().display()
             )));
         }

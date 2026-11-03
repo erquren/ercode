@@ -493,8 +493,7 @@ web_search = true
         cfg.tools,
         Some(ToolsToml {
             web_search: None,
-            experimental_request_user_input: None,
-            update_plan: None,
+            ..Default::default()
         })
     );
 }
@@ -513,8 +512,7 @@ web_search = false
         cfg.tools,
         Some(ToolsToml {
             web_search: None,
-            experimental_request_user_input: None,
-            update_plan: None,
+            ..Default::default()
         })
     );
 }
@@ -531,9 +529,8 @@ fn tools_experimental_request_user_input_defaults_to_enabled() {
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
-            web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: true }),
-            update_plan: None,
+            ..Default::default()
         })
     );
 }
@@ -551,9 +548,8 @@ enabled = false
     assert_eq!(
         cfg.tools,
         Some(ToolsToml {
-            web_search: None,
             experimental_request_user_input: Some(ExperimentalRequestUserInput { enabled: false }),
-            update_plan: None,
+            ..Default::default()
         })
     );
 }
@@ -569,6 +565,7 @@ async fn load_config_resolves_experimental_request_user_input_enabled() -> std::
                     enabled: false,
                 }),
                 update_plan: None,
+                ..Default::default()
             }),
             ..ConfigToml::default()
         },
@@ -1393,6 +1390,7 @@ fn config_toml_deserializes_model_availability_nux() {
     assert_eq!(
         cfg.tui.expect("tui config should deserialize"),
         Tui {
+            default_hosts: Default::default(),
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             screen_reader_detection_done: None,
@@ -2430,6 +2428,117 @@ enabled = true
             .expect("experimental_network should configure the managed proxy")
             .enabled()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_network_requirements_ignore_disabled_proxy_feature_config() -> std::io::Result<()>
+{
+    let feature_config = r#"
+[features.network_proxy]
+enabled = true
+dangerously_allow_all_unix_sockets = true
+allow_local_binding = true
+domains = { "unmanaged.example" = "allow" }
+unix_sockets = { "/tmp/unmanaged.sock" = "allow" }
+"#;
+    let requirements = r#"
+default_permissions = "managed-primary"
+
+[features]
+network_proxy = false
+
+[allowed_permission_profiles]
+managed-primary = true
+managed-secondary = true
+
+[permissions.network]
+enabled = true
+allow_upstream_proxy = false
+domains = { "shared.example" = "allow", "blocked.example" = "deny" }
+
+[permissions.managed-primary]
+extends = ":workspace"
+
+[permissions.managed-primary.network]
+enabled = true
+proxy_url = "http://127.0.0.1:43128"
+dangerously_allow_all_unix_sockets = false
+domains = { "primary.example" = "allow" }
+unix_sockets = { "/tmp/primary.sock" = "allow" }
+
+[permissions.managed-secondary]
+extends = "managed-primary"
+
+[permissions.managed-secondary.network]
+proxy_url = "http://127.0.0.1:43129"
+"#;
+    let mut baseline: Option<(NetworkProxySpec, NetworkProxySpec)> = None;
+
+    for source in ["baseline", "user", "trusted project"] {
+        let codex_home = TempDir::new()?;
+        let workspace = TempDir::new()?;
+        let workspace_key = TomlValue::String(project_trust_key(workspace.path()));
+        let user_features = if source == "user" { feature_config } else { "" };
+        std::fs::write(
+            codex_home.path().join(CONFIG_TOML_FILE),
+            format!(
+                r#"
+[projects.{workspace_key}]
+trust_level = "trusted"
+{user_features}
+"#
+            ),
+        )?;
+        if source == "trusted project" {
+            let project_config_dir = workspace.path().join(".codex");
+            std::fs::create_dir_all(&project_config_dir)?;
+            std::fs::write(project_config_dir.join(CONFIG_TOML_FILE), feature_config)?;
+        }
+
+        let config = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(codex_home.path().to_path_buf())
+            .harness_overrides(ConfigOverrides {
+                cwd: Some(workspace.path().to_path_buf()),
+                ..Default::default()
+            })
+            .cloud_config_bundle(
+                CloudConfigBundleFixture::loader_with_enterprise_requirement(requirements),
+            )
+            .build()
+            .await?;
+
+        assert!(!config.features.enabled(Feature::NetworkProxy), "{source}");
+        assert!(config.managed_network_requirements_enabled(), "{source}");
+        let active_profile = config
+            .permissions
+            .active_permission_profile()
+            .expect("managed profile should be active");
+        let initial = config
+            .permissions
+            .network
+            .as_ref()
+            .expect("shared requirements should enable the proxy");
+        let mut selected_profile = active_profile;
+        selected_profile.id = "managed-secondary".to_string();
+        let reselected = config
+            .network_proxy_spec_for_active_permission_profile(
+                &selected_profile,
+                config.permissions.permission_profile(),
+            )?
+            .expect("reselected managed profile should retain the proxy");
+
+        if let Some((baseline_initial, baseline_reselected)) = &baseline {
+            assert_eq!(initial, baseline_initial, "{source} initial");
+            assert_eq!(&reselected, baseline_reselected, "{source} reselected");
+        } else {
+            assert!(initial.enabled());
+            assert!(reselected.enabled());
+            assert_eq!(initial.proxy_host_and_port(), "127.0.0.1:43128");
+            assert_eq!(reselected.proxy_host_and_port(), "127.0.0.1:43129");
+            baseline = Some((initial.clone(), reselected));
+        }
+    }
     Ok(())
 }
 
@@ -4643,6 +4752,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
     assert_eq!(
         tui,
         Tui {
+            default_hosts: Default::default(),
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             screen_reader_detection_done: None,
@@ -10327,6 +10437,7 @@ async fn metrics_exporter_defaults_to_statsig_when_missing() -> std::io::Result<
     .await?;
 
     assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+    assert!(config.otel.log_sse_deltas);
     assert!(!config.otel.agent_response_logging_enabled());
     assert!(!config.otel.guardian_assessment_logging_enabled());
     Ok(())
@@ -10337,7 +10448,8 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
     let fixture = create_test_fixture()?;
     let mut cfg = fixture.cfg.clone();
     cfg.otel = Some(OtelConfigToml {
-        tool_result: toml::from_str("max_bytes = 8192").expect("tool-result logging config"),
+        tool_result: Some(toml::from_str("max_bytes = 8192").expect("tool-result logging config")),
+        log_sse_deltas: Some(false),
         log_agent_responses: Some(true),
         log_guardian_assessments: Some(true),
         exporter: Some(OtelExporterKind::OtlpHttp {
@@ -10361,6 +10473,7 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
     .await?;
 
     assert_eq!(config.otel.tool_result.max_bytes, 8192);
+    assert!(!config.otel.log_sse_deltas);
     assert!(config.otel.agent_response_logging_enabled());
     assert!(config.otel.guardian_assessment_logging_enabled());
     assert!(matches!(
@@ -10400,7 +10513,7 @@ beta = "two"
 
     assert_eq!(
         config.otel.span_attributes,
-        BTreeMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
+        HashMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
     );
     assert_eq!(
         config.otel.tracestate,
@@ -10450,7 +10563,7 @@ alpha = "one\ntwo"
     assert_eq!(config.otel.environment, "test");
     assert_eq!(
         config.otel.span_attributes,
-        BTreeMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
+        HashMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
     );
     assert_eq!(
         config.otel.tracestate,
@@ -10690,6 +10803,7 @@ async fn test_requirements_web_search_mode_allowlist_does_not_warn_when_unset() 
         mcp_servers: None,
         plugins: None,
         marketplaces: None,
+        otel: None,
         apps: None,
         rules: None,
         enforce_residency: None,
@@ -12248,6 +12362,7 @@ shell_tool = false
 
 #[test_case::test_case(Feature::Personality; "personality")]
 #[test_case::test_case(Feature::GuardianThreadContext; "guardian thread context")]
+#[test_case::test_case(Feature::DaemonAutoStart; "daemon auto start")]
 #[test_case::test_case(Feature::Worktrees; "worktrees")]
 #[test_case::test_case(Feature::RealtimeConversation; "realtime conversation")]
 #[test_case::test_case(Feature::ShellZshFork; "shell zsh fork")]
@@ -13916,6 +14031,139 @@ enabled = false
     assert!(config.startup_warnings.iter().any(|warning| {
         warning.contains("Configured value for `check_for_update_on_startup` is overridden")
     }));
+    Ok(())
+}
+
+#[test_case::test_case(
+    r#"
+[otel]
+tool_result = { max_bytes = 4096 }
+log_user_prompt = true
+environment = "user"
+exporter = { otlp-http = { endpoint = "https://user.example/logs", protocol = "json", headers = { Authorization = "user-secret" } } }
+trace_exporter = { otlp-grpc = { endpoint = "https://user.example:4317" } }
+metrics_exporter = "statsig"
+span_attributes = { "deployment.environment" = "user", machine = "laptop" }
+tracestate = { vendor = { tenant = "user", region = "us" }, other = { keep = "yes" } }
+"#,
+    r#"
+[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = false
+environment = "production"
+exporter = { otlp-http = { endpoint = "https://managed.example/logs", protocol = "binary", headers = { Authorization = "managed-secret" } } }
+trace_exporter = "none"
+metrics_exporter = { otlp-grpc = { endpoint = "https://managed.example:4317" } }
+span_attributes = { "deployment.environment" = "production", team = "platform" }
+tracestate = { vendor = { tenant = "managed" }, managed = { required = "yes" } }
+"#,
+    r#"
+[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = false
+environment = "production"
+exporter = { otlp-http = { endpoint = "https://managed.example/logs", protocol = "binary", headers = { Authorization = "managed-secret" } } }
+trace_exporter = "none"
+metrics_exporter = { otlp-grpc = { endpoint = "https://managed.example:4317" } }
+span_attributes = { "deployment.environment" = "production", machine = "laptop", team = "platform" }
+tracestate = { vendor = { tenant = "managed", region = "us" }, other = { keep = "yes" }, managed = { required = "yes" } }
+"#,
+    true; "managed_exact_values_and_unmanaged_metadata"
+)]
+#[test_case::test_case(
+    "[otel]\nenvironment = 'user'", "[otel]\ntool_result = { max_bytes = 1024 }",
+    "[otel]\nenvironment = 'user'\ntool_result = { max_bytes = 1024 }", false; "unset_user_limit"
+)]
+#[test_case::test_case(
+    "[otel]\ntool_result = { max_bytes = 2048 }", "[otel]\ntool_result = { max_bytes = 1024 }",
+    "[otel]\ntool_result = { max_bytes = 1024 }", true; "explicit_default_user_limit"
+)]
+#[test_case::test_case(
+    "", "[otel]\ntool_result = {}", "[otel]\ntool_result = { max_bytes = 2048 }", false; "managed_default_limit"
+)]
+#[test_case::test_case(
+    "", "[otel]\ntool_result = { max_bytes = 0 }", "[otel]\ntool_result = { max_bytes = 0 }", false; "managed_zero_limit"
+)]
+#[test_case::test_case(
+    "[otel]\nlog_agent_responses = false\nlog_guardian_assessments = true",
+    "[otel]\nlog_agent_responses = true\nlog_guardian_assessments = false",
+    "[otel]\nlog_agent_responses = true\nlog_guardian_assessments = false", true; "managed_logging_flags"
+)]
+#[test_case::test_case(
+    "[otel]\nlog_sse_deltas = true", "[otel]\nlog_sse_deltas = false",
+    "[otel]\nlog_sse_deltas = false", true; "managed_sse_delta_logs"
+)]
+#[tokio::test]
+async fn otel_requirements_resolve_config(
+    user_config: &str,
+    requirements: &str,
+    expected_config: &str,
+    expect_override_warning: bool,
+) -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(codex_home.path().join(CONFIG_TOML_FILE), user_config)?;
+    let config = load_with_enterprise_requirement(&codex_home, requirements).await?;
+    let expected: ConfigToml =
+        toml::from_str(expected_config).expect("expected OTEL config should deserialize");
+    let mut warnings = Vec::new();
+    assert_eq!(
+        config.otel,
+        super::otel::resolve_config(expected.otel.unwrap_or_default(), &mut warnings)
+    );
+    assert_eq!(
+        config
+            .startup_warnings
+            .iter()
+            .find(|warning| warning.contains("Configured values under `otel` are overridden"))
+            .map(String::as_str),
+        expect_override_warning.then_some(
+            "Configured values under `otel` are overridden by requirements from enterprise-managed requirements Base requirements (req_1).",
+        ),
+    );
+    assert!(
+        config
+            .startup_warnings
+            .iter()
+            .all(|warning| !warning.contains("managed-secret"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn analytics_disabled_preserves_managed_metrics_exporter() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    std::fs::write(
+        codex_home.path().join(CONFIG_TOML_FILE),
+        r#"
+[analytics]
+enabled = false
+"#,
+    )?;
+
+    let config = load_with_enterprise_requirement(
+        &codex_home,
+        r#"
+[otel]
+metrics_exporter = { otlp-http = { endpoint = "http://127.0.0.1:1/v1/metrics", protocol = "json" } }
+"#,
+    )
+    .await?;
+
+    assert!(matches!(
+        config.otel.metrics_exporter,
+        OtelExporterKind::OtlpHttp { .. }
+    ));
+    assert!(
+        crate::otel_init::build_provider(
+            &config,
+            env!("CARGO_PKG_VERSION"),
+            /*service_name_override*/ None,
+            /*default_analytics_enabled*/ true,
+        )
+        .expect("managed metrics configuration should remain valid")
+        .is_some(),
+        "analytics.enabled=false should preserve the custom managed metrics exporter"
+    );
     Ok(())
 }
 

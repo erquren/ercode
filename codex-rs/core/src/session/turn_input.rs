@@ -14,6 +14,7 @@
 
 use super::TurnInput;
 use super::UserInputMetadata;
+use super::inject::validate_injected_response_item;
 use super::session::Session;
 use super::session::SessionConfiguration;
 use super::session::SessionSettingsUpdate;
@@ -58,6 +59,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
+
+#[path = "turn_input_agent.rs"]
+mod agent;
 
 #[cfg(test)]
 #[path = "turn_input_tests.rs"]
@@ -237,12 +241,26 @@ pub(super) async fn handle(
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
     let request = request.into();
-    request
-        .request
-        .additional_context
-        .values()
-        .try_for_each(AdditionalContextEntry::validate)
-        .map_err(|message| CodexErr::InvalidRequest(message.to_owned()))?;
+    if let SubmittedTurnInput::ResponseItem(item)
+    | SubmittedTurnInput::AnnotatedResponseItem(AnnotatedResponseItem { item, .. }) =
+        &request.request.input
+    {
+        validate_injected_response_item(item)?;
+    }
+    // Native agent follow-ups do not use the request's additional context.
+    if !(matches!(mode, TurnInputMode::StartOrSteer)
+        && matches!(
+            request.request.input,
+            SubmittedTurnInput::InterAgentCommunication(_)
+        ))
+    {
+        request
+            .request
+            .additional_context
+            .values()
+            .try_for_each(AdditionalContextEntry::validate)
+            .map_err(|message| CodexErr::InvalidRequest(message.to_owned()))?;
+    }
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
@@ -347,6 +365,12 @@ async fn start_or_steer(
     request: WithTurnExtensionData<TurnInputRequest>,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
+    if matches!(
+        request.request.input,
+        SubmittedTurnInput::InterAgentCommunication(_)
+    ) {
+        return agent::submit(session, request, submission_id).await;
+    }
     let WithTurnExtensionData {
         request,
         turn_extension_init,
@@ -372,7 +396,7 @@ async fn start_or_steer(
         }) => true,
         _ => {
             return Err(CodexErr::InvalidRequest(
-                "only user input or standalone function-call outputs can start or steer a turn"
+                "only user input, agent messages, or standalone function-call outputs can start or steer a turn"
                     .to_string(),
             ));
         }
@@ -441,7 +465,8 @@ async fn start_or_steer(
             session
                 .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
                 .await;
-            let mut task_input = merge_additional_context_input(session, additional_context).await;
+            let mut task_input =
+                merge_additional_context_input(session, &turn_context, additional_context).await;
             if has_explicit_input {
                 task_input.push(
                     pending_turn_input(
@@ -591,7 +616,8 @@ async fn start_if_idle(
         .maybe_emit_model_warnings_for_turn(turn_context.as_ref())
         .await;
 
-    let mut task_input = merge_additional_context_input(session, additional_context).await;
+    let mut task_input =
+        merge_additional_context_input(session, &turn_context, additional_context).await;
     let sender_messages = capture_sender_user_messages(session, &mut input).await;
     match kind {
         TurnStartKind::User => {
@@ -807,6 +833,9 @@ impl Session {
         )
         .await;
         match submission {
+            Ok(TurnInputSubmission::Accepted) => {
+                unreachable!("realtime user input returns a turn outcome")
+            }
             Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {}
             Ok(TurnInputSubmission::NotSubmitted {
                 reason: NotSubmittedReason::ServerDraining,
@@ -910,7 +939,9 @@ impl Session {
         {
             return Err(NotSubmittedReason::ActiveTurnOutputSchemaMismatch);
         }
-        let mut pending_input = merge_additional_context_input(self, additional_context).await;
+        let mut pending_input =
+            merge_additional_context_input(self, &active_task.turn_context, additional_context)
+                .await;
 
         active_task
             .turn_context
@@ -939,7 +970,7 @@ impl Session {
         };
         pending_input.push(input);
         self.input_queue
-            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+            .extend_pending_input_and_notify_for_turn_state(
                 active_turn.turn_state.as_ref(),
                 pending_input,
             )
@@ -953,6 +984,7 @@ impl Session {
 
 async fn merge_additional_context_input(
     session: &Session,
+    turn_context: &TurnContext,
     additional_context: BTreeMap<String, AdditionalContextEntry>,
 ) -> Vec<TurnInput> {
     let format = if session.enabled(Feature::UntrustedAsToolOutput) {
@@ -962,7 +994,9 @@ async fn merge_additional_context_input(
     };
     let additional_context_input = {
         let mut state = session.state.lock().await;
-        state.additional_context.merge(additional_context, format)
+        state
+            .additional_context
+            .merge(additional_context, format, &turn_context.session_telemetry)
     };
     additional_context_input
         .into_iter()

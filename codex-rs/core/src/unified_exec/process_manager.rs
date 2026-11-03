@@ -579,8 +579,8 @@ impl UnifiedExecProcessManager {
             /*turn_diff_tracker*/ None,
         );
         event_ctx.model_context = Some(&model_context);
-        let plugin_attribution = if prepared.turn_environment.environment.is_remote() {
-            let file_system = prepared.turn_environment.environment.get_filesystem();
+        let plugin_attribution = if prepared.turn_environment.environment().is_remote() {
+            let file_system = prepared.turn_environment.environment().get_filesystem();
             context
                 .step_context
                 .turn
@@ -868,7 +868,7 @@ impl UnifiedExecProcessManager {
             exit_code,
             original_token_count: Some(original_token_count),
             hook_command: Some(prepared.hook_command.clone()),
-            tool_cwd: (!prepared.turn_environment.environment.is_remote())
+            tool_cwd: (!prepared.turn_environment.environment().is_remote())
                 .then(|| prepared.cwd.clone()),
         };
 
@@ -934,7 +934,7 @@ impl UnifiedExecProcessManager {
                     "terminal input and permission details are too large to review safely; use a smaller input or start a new terminal with fewer grants".to_string(),
                 ))
             };
-            let reviewed = crate::guardian::format_guardian_action_pretty(
+            let mut reviewed = codex_guardian_reviewer::guardian_approval_request_to_json(
                 &approval
                     .clone()
                     .into_guardian_request(/*exec_command_cwd_convention*/ None)
@@ -943,8 +943,14 @@ impl UnifiedExecProcessManager {
                     })?,
             )
             .map_err(|_| unreviewable_input_error())?;
-            // Bound the entire serialized action plus its reason, including JSON
-            // escaping. Reject, never execute an unreviewed tail.
+            // Launch context uses Guardian's normal request budget, not the stdin limit.
+            if let Some(fields) = reviewed.as_object_mut() {
+                fields.remove("original_command");
+            }
+            let reviewed =
+                serde_json::to_string_pretty(&reviewed).map_err(|_| unreviewable_input_error())?;
+            // Bound the input and permission details plus their reason, including
+            // JSON escaping. Reject, never execute an unreviewed tail.
             let oversized =
                 reviewed.len().saturating_add(approval_reason.len()) > MAX_STDIN_APPROVAL_BYTES;
             let size_check_result = if oversized {
@@ -966,6 +972,7 @@ impl UnifiedExecProcessManager {
                 return Err(unreviewable_input_error());
             }
             let approval_context = ApprovalContext {
+                exec_requirement: None,
                 review_context: GuardianReviewContext::from(&context.step_context),
                 cancellation_token: Some(context.cancellation_token.clone()),
                 call_id: context.call_id.clone(),

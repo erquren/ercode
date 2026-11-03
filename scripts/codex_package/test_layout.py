@@ -77,7 +77,7 @@ int main(void) {
                         # Preserved prebuilt inputs must not even need a strip tool.
                         command.extend(("--strip-tool", str(root / "absent-strip")))
                     subprocess.run(command, check=True, capture_output=True)
-                    for name in ("codex", "codex-code-mode-host", "codex-exec-server"):
+                    for name in ("er", "codex-code-mode-host", "codex-exec-server"):
                         executable = package / "bin" / name
                         self.assertEqual(
                             subprocess.check_output([str(executable)]),

@@ -163,7 +163,11 @@ async fn prepare_from_package(
         "bin/codex"
     };
     let source_entrypoint = metadata["entrypoint"].as_str().unwrap_or_default();
-    let er_entrypoint = if cfg!(windows) { "bin/er.exe" } else { "bin/er" };
+    let er_entrypoint = if cfg!(windows) {
+        "bin/er.exe"
+    } else {
+        "bin/er"
+    };
     let branded = source_entrypoint == er_entrypoint;
     let winget = cfg!(windows)
         && metadata["layoutVersion"] == 1
@@ -253,7 +257,10 @@ async fn prepare_from_package(
     // Keep the daemon's private executable layout compatible without exposing
     // a codex command in the user's PATH.
     let digest = if branded {
-        std::fs::rename(stage.path().join(source_entrypoint), stage.path().join(entrypoint))?;
+        std::fs::rename(
+            stage.path().join(source_entrypoint),
+            stage.path().join(entrypoint),
+        )?;
         metadata["entrypoint"] = entrypoint.into();
         std::fs::write(
             stage.path().join("codex-package.json"),

@@ -341,6 +341,109 @@ refresh_interval_ms = 12345
 }
 
 #[test]
+fn otel_requirements_compose_exact_values_atomic_exporters_and_metadata() {
+    let low_dir = tempdir().expect("low-priority requirements directory");
+    let high_dir = tempdir().expect("high-priority requirements directory");
+    let low_base = AbsolutePathBuf::from_absolute_path(low_dir.path()).expect("absolute low base");
+    let high_base =
+        AbsolutePathBuf::from_absolute_path(high_dir.path()).expect("absolute high base");
+
+    let low = layer(
+        "req_low",
+        "Low",
+        r#"
+[otel]
+tool_result = { max_bytes = 1024 }
+log_user_prompt = true
+environment = "low"
+exporter = { otlp-http = { endpoint = "https://low.example", protocol = "json", headers = { stale = "low" }, tls = { ca-certificate = "low-ca.pem" } } }
+trace_exporter = { otlp-grpc = { endpoint = "https://low.example", tls = { client-certificate = "low-client.pem" } } }
+metrics_exporter = "statsig"
+span_attributes = { shared = "low", lower = "preserved" }
+tracestate = { shared = { tenant = "low", region = "us" }, lower = { tenant = "preserved" }, empty = {} }
+"#,
+    )
+    .with_base_dir(low_base);
+    let high = layer(
+        "req_high",
+        "High",
+        r#"
+[otel]
+tool_result = { max_bytes = 4096 }
+log_user_prompt = false
+environment = "high"
+exporter = { otlp-http = { endpoint = "https://high.example", protocol = "binary", tls = { ca-certificate = "high-ca.pem" } } }
+metrics_exporter = "none"
+span_attributes = { shared = "high", higher = "added" }
+tracestate = { shared = { tenant = "replacement" }, lower = {}, higher = { tenant = "added" } }
+"#,
+    )
+    .with_base_dir(high_base);
+    let expected_source = RequirementSource::composite([high.source.clone(), low.source.clone()]);
+    let composed = compose_requirements_for_hostname(
+        vec![
+            low,
+            high,
+            layer(
+                "empty",
+                "Empty",
+                "[otel]\nspan_attributes = {}\ntracestate = { lower = {} }",
+            ),
+        ],
+        /*hostname*/ None,
+    )
+    .expect("compose OTEL requirements")
+    .expect("requirements present")
+    .otel
+    .expect("OTEL requirements present");
+    assert_eq!(composed.source, expected_source);
+
+    let expected = r#"
+[otel]
+tool_result = { max_bytes = 4096 }
+log_user_prompt = false
+environment = "high"
+exporter = { otlp-http = { endpoint = "https://high.example", protocol = "binary", tls = { ca-certificate = '$HIGH_CA' } } }
+trace_exporter = { otlp-grpc = { endpoint = "https://low.example", tls = { client-certificate = '$LOW_CLIENT' } } }
+metrics_exporter = "none"
+span_attributes = { shared = "high", lower = "preserved", higher = "added" }
+tracestate = { shared = { tenant = "replacement", region = "us" }, lower = { tenant = "preserved" }, higher = { tenant = "added" } }
+"#
+    .replace(
+        "$HIGH_CA",
+        &high_dir.path().join("high-ca.pem").display().to_string(),
+    )
+    .replace(
+        "$LOW_CLIENT",
+        &low_dir.path().join("low-client.pem").display().to_string(),
+    );
+    assert_eq!(
+        composed.value,
+        *expected_requirements(expected).otel.unwrap()
+    );
+    assert_eq!(
+        compose(vec![layer(
+            "mixed",
+            "Mixed",
+            "[otel]\nexporter = 'none'\nspan_attributes = {}\ntracestate = { empty = {} }",
+        )]),
+        Ok(Some(expected_requirements("[otel]\nexporter = 'none'"))),
+    );
+
+    for empty in [
+        "[otel]",
+        "[otel.span_attributes]",
+        "[otel.tracestate.empty]",
+    ] {
+        assert_eq!(
+            compose(vec![layer("empty", "Empty", empty)]),
+            Ok(None),
+            "{empty}",
+        );
+    }
+}
+
+#[test]
 fn provider_auth_missing_command_is_rejected_after_composition() {
     let err = compose(vec![
         layer("low", "Name", "[model_providers.gateway]\nname = 'Gateway'"),
@@ -764,6 +867,32 @@ fn network_aliases_merge_with_layer_precedence_and_sources() {
                 expected_source,
             ))
         );
+    }
+}
+
+#[test]
+fn permissions_network_conflicts_with_top_level_network_across_layers() {
+    for table in ["network_proxy", "experimental_network"] {
+        for (root_first, root_values) in [(true, "enabled = true"), (false, "")] {
+            let root = layer("root", "Root", &format!("[{table}]\n{root_values}"));
+            let permissions = layer(
+                "permissions",
+                "Permissions",
+                "[permissions.network]\nenabled = true",
+            );
+            let root_source = root.source.clone();
+            let permissions_source = permissions.source.clone();
+            let layers = if root_first {
+                vec![root, permissions]
+            } else {
+                vec![permissions, root]
+            };
+            let err = compose_requirements_for_hostname(layers, /*hostname*/ None)
+                .expect_err("network requirement surfaces must not coexist")
+                .to_string();
+            assert!(err.contains(&root_source.to_string()), "{err}");
+            assert!(err.contains(&permissions_source.to_string()), "{err}");
+        }
     }
 }
 
@@ -1433,6 +1562,75 @@ deny_read = [{high_path:?}, {low_path:?}]
 
 [permissions.managed-standard]
 description = "High profile"
+extends = ":workspace"
+"#
+        ))
+    );
+}
+
+#[test]
+fn permissions_network_merges_with_higher_precedence_filesystem_requirements() {
+    let denied_path = if cfg!(windows) {
+        "C:\\secret"
+    } else {
+        "/secret"
+    };
+    let low = layer(
+        "req_low",
+        "Low",
+        "[permissions.network]\nenabled = true\n[permissions.managed]\nextends = ':workspace'",
+    );
+    let high = layer(
+        "req_high",
+        "High",
+        &format!(
+            r#"
+[permissions.filesystem]
+deny_read = [{denied_path:?}]
+
+[permissions.network.domains]
+'example.com' = 'allow'
+"#
+        ),
+    );
+    let network_source = RequirementSource::composite([high.source.clone(), low.source.clone()]);
+    let filesystem_source = high.source.clone();
+    let composed = compose_requirements_for_hostname(
+        [
+            low,
+            high,
+            layer(
+                "profile",
+                "Profile",
+                "[permissions.other]\nextends = ':workspace'",
+            ),
+        ],
+        /*hostname*/ None,
+    )
+    .expect("compose requirements")
+    .expect("requirements present");
+    let effective = crate::ConfigRequirements::try_from(composed.clone()).expect("requirements");
+    assert_eq!(effective.network.expect("network").source, network_source);
+    assert_eq!(
+        effective.filesystem.expect("filesystem").source,
+        filesystem_source
+    );
+    assert_eq!(
+        composed.into_toml(),
+        expected_requirements(format!(
+            r#"
+[permissions.filesystem]
+deny_read = [{denied_path:?}]
+
+[permissions.network]
+enabled = true
+[permissions.network.domains]
+'example.com' = 'allow'
+
+[permissions.other]
+extends = ":workspace"
+
+[permissions.managed]
 extends = ":workspace"
 "#
         ))
