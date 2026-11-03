@@ -7,6 +7,16 @@ on:
         type: string
         required: true
         default: "0.166.0"
+      publish:
+        description: Publish the verified packages (false only checks them)
+        type: boolean
+        required: true
+        default: false
+      replace_draft_assets:
+        description: Replace mismatched draft files (never a published release)
+        type: boolean
+        required: true
+        default: false
       runs:
         description: Comma-separated build workflow run IDs (include retries)
         type: string
@@ -34,4 +44,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           BUILD_RUNS: ${{ inputs.runs }}
-        run: python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$BUILD_RUNS"
+          PUBLISH: ${{ inputs.publish }}
+          REPLACE_DRAFT_ASSETS: ${{ inputs.replace_draft_assets }}
+        run: |
+          extra=()
+          [[ "$PUBLISH" == "true" ]] || extra+=(--check-only)
+          if [[ "$REPLACE_DRAFT_ASSETS" == "true" ]]; then
+            extra+=(--replace-draft-assets)
+          fi
+          python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$BUILD_RUNS" "${extra[@]}"

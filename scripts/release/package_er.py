@@ -66,9 +66,12 @@ def verify_architecture(path, target):
             pe = stream.read(6)
         assert pe[:4] == b"PE\0\0" and struct.unpack_from("<H", pe, 4)[0] == 0x8664, path
     else:
-        run(["lipo", "-verify_arch", "arm64", path])
+        # lipo treats arguments after -verify_arch as architectures, not files.
+        run(["lipo", path, "-verify_arch", "arm64"])
         libraries = subprocess.check_output(["otool", "-L", str(path)], text=True)
-        assert "/opt/homebrew/" not in libraries and "/usr/local/opt/" not in libraries, libraries
+        for line in libraries.splitlines()[1:]:
+            dependency = line.strip().split(" (", 1)[0]
+            assert dependency.startswith(("/usr/lib/", "/System/Library/")), f"Unbundled macOS dependency: {dependency} ({path})"
 
 
 def sign_macos(package, source):
@@ -91,6 +94,54 @@ def archive_package(package, archive):
     checksum = archive.with_name(archive.name + ".sha256")
     checksum.write_text(f"{digest(archive)}  {archive.name}\n", encoding="utf-8")
     print(f"Archive: {archive} ({archive.stat().st_size} bytes)", flush=True)
+
+
+def verify_package(package, target, version, commit):
+    windows = "windows" in target
+    metadata = json.loads((package / "codex-package.json").read_text())
+    assert metadata["target"] == target and metadata["version"] == version, metadata
+    assert metadata["entrypoint"] == ("bin/er.exe" if windows else "bin/er"), metadata
+    info = json.loads((package / "BUILD-INFO.json").read_text())
+    assert info["sourceCommit"] == commit and info["target"] == target and info["version"] == version, info
+    for binary in executables(package, windows):
+        assert binary.is_file(), binary
+        verify_architecture(binary, target)
+    cli = package / metadata["entrypoint"]
+    banner = subprocess.check_output([str(cli), "--version"], text=True).strip()
+    assert banner == f"er {version}", banner
+    for name in ("er", "codex-code-mode-host", "codex-exec-server"):
+        run([package / "bin" / (name + (".exe" if windows else "")), "--help"], stdout=subprocess.DEVNULL)
+    with tempfile.TemporaryDirectory(prefix="er-install-check-") as temp:
+        temp = Path(temp)
+        if windows:
+            run(["pwsh", "-NoProfile", "-File", package / "install.ps1", "-ErHome", temp / "config",
+                 "-BinDir", temp / "bin"])
+            run(["cmd.exe", "/d", "/c", str(temp / "bin/er.cmd"), "--version"])
+        else:
+            run([sys.executable, package / "install.py", package, "--home", temp / "config", "--bin-dir", temp / "bin"])
+            run([temp / "bin/er", "--version"])
+    rg = package / "codex-path" / ("rg.exe" if windows else "rg")
+    run([rg, "--version"], timeout=30)
+    run([rg, "--pcre2-version"], timeout=30)
+    if "linux" in target:
+        run([package / "codex-resources/bwrap", "--version"], timeout=30)
+
+
+def verify_archive(archive, target, version, commit):
+    with tempfile.TemporaryDirectory(prefix="er-extract-check-") as directory:
+        root = Path(directory)
+        name = f"er-{version}-{TARGETS[target]}"
+        if archive.suffix == ".zip":
+            with zipfile.ZipFile(archive) as bundle:
+                for member in bundle.namelist():
+                    path = root / member
+                    assert path.resolve().is_relative_to((root / name).resolve()), member
+                bundle.extractall(root)
+        else:
+            with tarfile.open(archive) as bundle:
+                bundle.extractall(root, filter="data")
+        assert {p.name for p in root.iterdir()} == {name}, "Unexpected archive root"
+        verify_package(root / name, target, version, commit)
 
 
 def main():
@@ -142,14 +193,17 @@ def main():
         launch = "~/.local/bin/er --no-daemon"
     if (source / "docs/token-speeds.md").exists():
         shutil.copy2(source / "docs/token-speeds.md", package / "TOKEN-SPEEDS.md")
-    notes = [f"er {version} - {TARGETS[args.target]}", "", "Install from this directory:",
+    direct = r".\bin\er.exe --no-daemon" if windows else "./bin/er --no-daemon"
+    notes = [f"er {version} - {TARGETS[args.target]}", "", "Extract and run directly (no installer required):",
+             f"  {direct}", "", "Optional installation from this directory:",
              f"  {install}", "", "Launch the new backend after upgrading:", f"  {launch}", "",
-             "Keep the full package together. Helpers remain private under ~/.ercode.",
+             "Keep bin, codex-path and codex-resources together. Do not copy only the er binary.",
+             "The optional installer keeps helpers private under ~/.ercode.",
              "Add ~/.local/bin to PATH to use the er command.", f"Source commit: {commit}"]
     if "linux" in args.target:
         notes.append("All packaged executables are static MUSL builds and require no system GLIBC.")
     if "darwin" in args.target:
-        notes.append("Apple Silicon build. Ad-hoc signed for local execution; not Developer ID notarized.")
+        notes.append("Apple Silicon build, macOS 14+. Ad-hoc signed; not Developer ID notarized.")
         sign_macos(package, source)
     (package / "README.txt").write_text("\n".join(notes) + "\n", encoding="utf-8")
     info = {"version": version, "sourceCommit": commit, "target": args.target, "profile": "release",
@@ -161,24 +215,12 @@ def main():
         info["buildSettings"] = {key: os.environ.get(key) for key in
                                  ("CARGO_PROFILE_RELEASE_LTO", "CARGO_PROFILE_RELEASE_DEBUG", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS")}
     (package / "BUILD-INFO.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
-    for binary in executables(package, windows):
-        assert binary.is_file(), binary
-        verify_architecture(binary, args.target)
-    cli = package / metadata["entrypoint"]
-    banner = subprocess.check_output([str(cli), "--version"], text=True).strip()
-    assert banner == f"er {version}", banner
-    for name in ("er", "codex-code-mode-host", "codex-exec-server"):
-        run([package / "bin" / (name + (".exe" if windows else "")), "--help"], stdout=subprocess.DEVNULL)
-    with tempfile.TemporaryDirectory(prefix="er-install-check-") as temp:
-        temp = Path(temp)
-        if windows:
-            run(["pwsh", "-NoProfile", "-File", package / "install.ps1", "-ErHome", temp / "config",
-                 "-BinDir", temp / "bin"])
-            run(["cmd.exe", "/d", "/c", str(temp / "bin/er.cmd"), "--version"])
-        else:
-            run([sys.executable, package / "install.py", package, "--home", temp / "config", "--bin-dir", temp / "bin"])
-            run([temp / "bin/er", "--version"])
-    archive_package(package, package.with_name(package.name + (".zip" if windows else ".tar.gz")))
+    archive = package.with_name(package.name + (".zip" if windows else ".tar.gz"))
+    archive_package(package, archive)
+    # Test the exact distributed archive after extraction, including executable bits
+    # and the optional installers, rather than only the staging directory.
+    verify_archive(archive, args.target, version, commit)
+
 
 
 if __name__ == "__main__":
