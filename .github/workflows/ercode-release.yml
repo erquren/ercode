@@ -9,6 +9,17 @@ on:
         required: true
         default: "0.166.0"
         type: string
+      platform:
+        description: Build all platforms, or retry one platform without publishing
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux-x86_64-musl
+          - linux-aarch64-musl
+          - macos-aarch64
+          - windows-x86_64
       reuse_linux_x64:
         description: Reuse the verified Linux x86_64 archive already attached to the draft release
         required: true
@@ -19,34 +30,46 @@ permissions:
   contents: read
 
 concurrency:
-  group: ercode-release-${{ inputs.tag }}
+  group: ercode-release-${{ inputs.tag }}-${{ inputs.platform }}
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - id: matrix
+        env:
+          SELECTED_PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          rows = [
+              dict(platform="linux-x86_64-musl", target="x86_64-unknown-linux-musl", runner="ubuntu-24.04", jobs=2),
+              dict(platform="linux-aarch64-musl", target="aarch64-unknown-linux-musl", runner="ubuntu-24.04-arm", jobs=2),
+              dict(platform="macos-aarch64", target="aarch64-apple-darwin", runner="macos-15", jobs=1),
+              dict(platform="windows-x86_64", target="x86_64-pc-windows-msvc", runner="windows-2022", jobs=2),
+          ]
+          selected = os.environ["SELECTED_PLATFORM"]
+          rows = [row for row in rows if selected == "all" or row["platform"] == selected]
+          assert rows, selected
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("value=" + json.dumps(rows) + "\n")
+          PYTHON
+
   build:
     name: Build ${{ matrix.platform }}
+    needs: plan
+    # GitHub requires write access to read an unpublished draft release's assets.
+    permissions:
+      contents: write
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux-x86_64-musl
-            target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
-            jobs: 2
-          - platform: linux-aarch64-musl
-            target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
-            jobs: 2
-          - platform: macos-aarch64
-            target: aarch64-apple-darwin
-            runner: macos-15
-            jobs: 1
-          - platform: windows-x86_64
-            target: x86_64-pc-windows-msvc
-            runner: windows-2022
-            jobs: 2
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       TARGET: ${{ matrix.target }}
@@ -172,6 +195,7 @@ jobs:
 
   publish:
     name: Publish four-platform release
+    if: inputs.platform == 'all'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
