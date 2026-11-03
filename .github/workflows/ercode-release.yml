@@ -158,7 +158,9 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
         working-directory: source/codex-rs
-        run: cargo install ripgrep --version 15.2.0 --locked --target "$TARGET" --root "$RUNNER_TEMP/er-ripgrep"
+        env:
+          PCRE2_SYS_STATIC: "1"
+        run: cargo install ripgrep --version 15.2.0 --features pcre2 --locked --target "$TARGET" --root "$RUNNER_TEMP/er-ripgrep"
       - name: Build and verify native package
         shell: bash
         run: |
