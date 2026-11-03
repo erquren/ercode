@@ -1,0 +1,216 @@
+name: ercode release
+run-name: ercode release ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build
+        required: true
+        default: "0.166.0"
+        type: string
+      reuse_linux_x64:
+        description: Reuse the verified Linux x86_64 archive already attached to the draft release
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ercode-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64-musl
+            target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            jobs: 2
+          - platform: linux-aarch64-musl
+            target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            jobs: 2
+          - platform: macos-aarch64
+            target: aarch64-apple-darwin
+            runner: macos-15
+            jobs: 1
+          - platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            jobs: 2
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      TARGET: ${{ matrix.target }}
+      CODEX_REPO_ROOT: ${{ github.workspace }}/source
+      CARGO_BUILD_JOBS: ${{ matrix.jobs }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      # Keep optimized release builds within standard hosted-runner memory limits.
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      RUST_MIN_STACK: "8388608"
+      AWS_LC_SYS_NO_JITTER_ENTROPY: "1"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+    steps:
+      - name: Enable long paths on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          path: packaging
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Configure build directory
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/t" >> "$GITHUB_ENV"
+      - name: Validate release version
+        shell: bash
+        run: |
+          python -c 'import os,tomllib; from pathlib import Path; v=tomllib.loads(Path("source/codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]; assert v==os.environ["RELEASE_TAG"], (v,os.environ["RELEASE_TAG"])'
+      - name: Download existing Linux x86_64 release archive
+        if: inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p download extracted
+          gh release download "$RELEASE_TAG" --dir download --pattern "er-${RELEASE_TAG}-linux-x86_64-musl.tar.gz" --pattern "er-${RELEASE_TAG}-linux-x86_64-musl.tar.gz.sha256"
+          (cd download && sha256sum -c "er-${RELEASE_TAG}-linux-x86_64-musl.tar.gz.sha256")
+          python -c 'import os,tarfile; from pathlib import Path; p=Path("download")/("er-"+os.environ["RELEASE_TAG"]+"-linux-x86_64-musl.tar.gz"); tarfile.open(p).extractall("extracted",filter="data")'
+      - name: Free build space on Linux
+        if: runner.os == 'Linux' && !(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h
+      - name: Set up Rust
+        if: "!(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')"
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
+      - name: Set up Zig for MUSL
+        if: runner.os == 'Linux' && !(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: "0.14.0"
+          use-cache: false
+      - name: Install MUSL dependencies
+        if: runner.os == 'Linux' && !(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build protobuf-compiler
+          bash source/.github/scripts/install-musl-build-tools.sh
+      - name: Configure macOS target
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo 'MACOSX_DEPLOYMENT_TARGET=14.0' >> "$GITHUB_ENV"
+          xcodebuild -version
+          df -h
+      - name: Configure MSVC
+        if: runner.os == 'Windows'
+        uses: ./source/.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
+      - name: Configure Windows native dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command nasm -ErrorAction SilentlyContinue)) {
+            choco install nasm --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          }
+          'C:\Program Files\NASM' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          'LIBCLANG_PATH=C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Cache Rust dependencies
+        if: "!(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')"
+        uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+        with:
+          workspaces: source/codex-rs -> ${{ runner.temp }}/t
+          shared-key: ercode-release-${{ matrix.target }}-hosted-v1
+          cache-on-failure: true
+          cache-workspace-crates: true
+      - name: Build and verify native package
+        if: "!(inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl')"
+        shell: bash
+        run: python packaging/scripts/release/package_er.py --source source --target "$TARGET" --output-dir dist
+      - name: Verify and package existing Linux x86_64 binaries
+        if: inputs.reuse_linux_x64 && matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: python packaging/scripts/release/package_er.py --source source --target "$TARGET" --output-dir dist --existing-package "extracted/er-${RELEASE_TAG}-linux-x86_64-musl"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: er-${{ inputs.tag }}-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish four-platform release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: er-${{ inputs.tag }}-*
+          path: dist
+          merge-multiple: true
+      - name: Verify archives and publish
+        shell: bash
+        run: |
+          cd dist
+          for platform in linux-x86_64-musl linux-aarch64-musl macos-aarch64; do
+            test -f "er-${RELEASE_TAG}-${platform}.tar.gz"
+            test -f "er-${RELEASE_TAG}-${platform}.tar.gz.sha256"
+          done
+          test -f "er-${RELEASE_TAG}-windows-x86_64.zip"
+          test -f "er-${RELEASE_TAG}-windows-x86_64.zip.sha256"
+          sha256sum -c *.sha256
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "er ${RELEASE_TAG}" --notes 'Cross-platform er runtime packages.'
+          fi
+          gh release upload "$RELEASE_TAG" *.tar.gz *.zip *.sha256 --clobber
+          cat > release-notes.md <<'NOTES'
+          Complete runtime packages for Windows x86_64, Linux x86_64 MUSL, Linux ARM64 MUSL and macOS ARM64.
+
+          Each package includes er, its private runtime helpers, license notices, installation instructions and build provenance. SHA-256 files are provided alongside every archive.
+
+          Linux/macOS: extract and run `python3 install.py .`.
+          Windows: extract and run `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`.
+
+          After upgrading an earlier 0.166.0 build, launch `er --no-daemon` to use the new backend. This version includes live reasoning text estimates and separate input/output request averages in the completion line, excluding gaps spent waiting for builds and tools.
+
+          macOS packages are ad-hoc signed, without Apple Developer ID notarization.
+          NOTES
+          gh release edit "$RELEASE_TAG" --draft=false --latest --title "er ${RELEASE_TAG}" --notes-file release-notes.md
