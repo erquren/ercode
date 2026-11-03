@@ -1,6 +1,7 @@
 //! A live task status row rendered above the composer while the agent is busy.
 //!
-//! The row renders a separately owned clock, the optional interrupt hint, and short inline
+//! The row renders a separately owned clock, a one-second estimate of live output speed,
+//! the optional interrupt hint, and short inline
 //! context (for example, the unified-exec background-process summary). Keeping
 //! these pieces on one line avoids vertical layout churn in the bottom pane.
 //! Hook activity uses the remaining space or its own line on overflow, so it
@@ -35,6 +36,7 @@ use crate::width::display_width;
 use crate::wrapping::RtOptions;
 use crate::wrapping::word_wrap_lines;
 
+mod output_rate;
 mod timer;
 pub(crate) use timer::StatusTimer;
 
@@ -232,6 +234,12 @@ impl StatusIndicator<'_> {
             |started_at| now.saturating_duration_since(started_at),
         );
         let pretty_elapsed = fmt_elapsed_compact(elapsed_duration.as_secs());
+        let mut speed = self
+            .timer
+            .output_rate
+            .as_ref()
+            .map(|rate| format!(" · ~{}t/s", rate.tokens_per_second(now)))
+            .unwrap_or_default();
         let progress =
             MotionMode::from_animations_enabled(row.animations_enabled && row.effects.progress);
         let shimmer =
@@ -254,14 +262,29 @@ impl StatusIndicator<'_> {
         if !spans.is_empty() {
             spans.push(" ".into());
         }
+        // On narrow terminals keep the clock and interrupt control ahead of the estimate.
+        let control_width = if row.show_interrupt_hint {
+            row.interrupt_binding.map(|binding| {
+                display_width(&format!("({pretty_elapsed} •  to interrupt)"))
+                    + binding.spans().iter().map(Span::width).sum::<usize>()
+            })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| display_width(&format!("({pretty_elapsed})")));
+        if spans.iter().map(Span::width).sum::<usize>() + control_width + display_width(&speed)
+            > usize::from(width)
+        {
+            speed.clear();
+        }
         if row.show_interrupt_hint
             && let Some(interrupt_binding) = row.interrupt_binding
         {
-            spans.push(format!("({pretty_elapsed} • ").dim());
+            spans.push(format!("({pretty_elapsed}{speed} • ").dim());
             spans.extend(interrupt_binding.spans());
             spans.push(" to interrupt)".dim());
         } else {
-            spans.push(format!("({pretty_elapsed})").dim());
+            spans.push(format!("({pretty_elapsed}{speed})").dim());
         }
         if let Some(message) = &row.inline_message {
             // Keep optional context after elapsed/interrupt text so that core
@@ -304,6 +327,11 @@ impl Renderable for StatusIndicator<'_> {
         if area.is_empty() {
             return;
         }
+        if let Some(rate) = &self.timer.output_rate {
+            self.row
+                .frame_requester
+                .schedule_frame_in(rate.next_sample_in(Instant::now()));
+        }
         if self.row.animations_enabled || self.timer.display_started_at.is_some() {
             let interval_ms = if self.row.animations_enabled
                 && (self.row.effects.progress || self.row.effects.shimmer)
@@ -328,6 +356,35 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[test]
+    fn output_rate_is_between_elapsed_and_interrupt_and_yields_on_narrow_terminals() {
+        let (tx, _rx) = unbounded_channel();
+        let row = StatusIndicatorWidget::new(
+            AppEventSender::new(tx),
+            FrameRequester::test_dummy(),
+            false,
+            Default::default(),
+        );
+        let mut timer = StatusTimer::default();
+        timer.pause_at(timer.last_resume_at);
+        let start = Instant::now() - Duration::from_secs(1);
+        let mut rate = output_rate::OutputRate::new(start);
+        rate.record(&"a".repeat(136), start);
+        timer.output_rate = Some(rate);
+        let status = StatusIndicator {
+            row: &row,
+            timer: &timer,
+        };
+        assert_eq!(
+            status.lines(80)[0].to_string(),
+            "Working (0s · ~34t/s • esc to interrupt)"
+        );
+        assert_eq!(
+            status.lines(31)[0].to_string(),
+            "Working (0s • esc to interrupt)"
+        );
+    }
 
     use pretty_assertions::assert_eq;
 

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 #[derive(Debug)]
 pub(crate) struct StatusTimer {
+    pub(super) output_rate: Option<super::output_rate::OutputRate>,
     /// Optional wall-clock origin for the displayed phase, without resetting turn accounting.
     pub(crate) display_started_at: Option<Instant>,
     pub(super) elapsed_running: Duration,
@@ -16,6 +17,7 @@ pub(crate) struct StatusTimer {
 impl Default for StatusTimer {
     fn default() -> Self {
         Self {
+            output_rate: None,
             display_started_at: None,
             elapsed_running: Duration::ZERO,
             last_resume_at: Instant::now(),
@@ -25,7 +27,25 @@ impl Default for StatusTimer {
 }
 
 impl StatusTimer {
+    pub(crate) fn start_output_rate(&mut self) {
+        self.output_rate = Some(super::output_rate::OutputRate::new(Instant::now()));
+    }
+
+    pub(crate) fn record_output(&mut self, text: &str) {
+        if let Some(rate) = &mut self.output_rate {
+            rate.record(text, Instant::now());
+        }
+    }
+
+    pub(crate) fn has_output_rate(&self) -> bool {
+        self.output_rate.is_some()
+    }
+
+    pub(crate) fn stop_output_rate(&mut self) {
+        self.output_rate = None;
+    }
     pub(crate) fn reset(&mut self, elapsed: Duration) {
+        self.stop_output_rate();
         self.elapsed_running = elapsed;
         self.last_resume_at = Instant::now();
         // A turn can start while an MCP elicitation or approval is still open.

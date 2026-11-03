@@ -114,6 +114,7 @@ impl ChatWidget {
                         self.on_replayed_task_started(notification.turn.started_at);
                     } else {
                         self.on_task_started();
+                        self.bottom_pane.start_output_rate();
                     }
                 }
             }
@@ -136,6 +137,9 @@ impl ChatWidget {
                             &notification.item_id,
                         ))
                 {
+                    if !from_replay {
+                        self.bottom_pane.record_output(&notification.delta);
+                    }
                     self.transcript.active_streamed_agent_message =
                         Some((notification.turn_id, notification.item_id));
                     self.on_agent_message_delta(notification.delta);
@@ -143,6 +147,9 @@ impl ChatWidget {
             }
             ServerNotification::PlanDelta(notification) => {
                 self.restore_realtime_transcripts_before_turn(&notification.turn_id);
+                if !from_replay {
+                    self.bottom_pane.record_output(&notification.delta);
+                }
                 self.on_plan_delta(notification.delta);
             }
             ServerNotification::ReasoningSummaryTextDelta(notification) => {
@@ -152,6 +159,9 @@ impl ChatWidget {
                 ) && self.status_state.reasoning_item_id.as_deref()
                     == Some(&notification.item_id)
                 {
+                    if !from_replay && !self.config.show_raw_agent_reasoning {
+                        self.bottom_pane.record_output(&notification.delta);
+                    }
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }
@@ -163,6 +173,9 @@ impl ChatWidget {
                     )
                     && self.status_state.reasoning_item_id.as_deref() == Some(&notification.item_id)
                 {
+                    if !from_replay {
+                        self.bottom_pane.record_output(&notification.delta);
+                    }
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }

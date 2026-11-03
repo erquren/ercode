@@ -731,6 +731,22 @@ impl BottomPane {
         self.status_timer.reset(elapsed);
     }
 
+    pub(crate) fn start_output_rate(&mut self) {
+        self.status_timer.start_output_rate();
+        self.ensure_status_indicator();
+        self.request_redraw();
+    }
+
+    pub(crate) fn record_output(&mut self, text: &str) {
+        if self.is_task_running && !text.is_empty() {
+            // A reconnected running turn begins sampling with its first live delta.
+            if !self.status_timer.has_output_rate() {
+                self.start_output_rate();
+            }
+            self.status_timer.record_output(text);
+        }
+    }
+
     pub(crate) fn set_status_timer_origin(&mut self, started_at: Option<Instant>) {
         self.status_timer.display_started_at = started_at;
         self.request_redraw();
@@ -1431,6 +1447,7 @@ impl BottomPane {
                 self.request_redraw();
             }
         } else {
+            self.status_timer.stop_output_rate();
             // Hide the status indicator when a task completes, but keep other modal views.
             self.hide_status_indicator();
         }
@@ -1442,6 +1459,10 @@ impl BottomPane {
 
     /// Hide the status indicator while leaving task-running state untouched.
     pub(crate) fn hide_status_indicator(&mut self) {
+        // Keep live throughput visible while assistant text replaces the stream tail.
+        if self.is_task_running && self.status_timer.has_output_rate() {
+            return;
+        }
         if self.status.take().is_some() {
             self.request_redraw();
         }
@@ -3609,6 +3630,29 @@ mod tests {
                 .elapsed_at(Instant::now() + Duration::from_secs(/*secs*/ 10))
                 >= Duration::from_secs(/*secs*/ 10)
         );
+    }
+
+    #[test]
+    fn output_rate_survives_streaming_and_resets_between_turns() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let mut pane = test_pane(AppEventSender::new(tx));
+        pane.record_output("ignored while idle");
+        assert!(!pane.status_timer.has_output_rate());
+        pane.set_task_running(true);
+        pane.start_output_rate();
+        pane.record_output("live assistant text");
+        pane.hide_status_indicator();
+        assert!(pane.status_indicator_visible());
+        assert!(pane.status_timer.has_output_rate());
+        pane.set_task_running(false);
+        assert!(!pane.status_indicator_visible());
+        assert!(!pane.status_timer.has_output_rate());
+        pane.set_task_running(true);
+        assert!(!pane.status_timer.has_output_rate());
+        pane.record_output("first live delta after reconnect");
+        assert!(pane.status_timer.has_output_rate());
+        pane.reset_status_timer(Duration::ZERO);
+        assert!(!pane.status_timer.has_output_rate());
     }
 
     #[test]
