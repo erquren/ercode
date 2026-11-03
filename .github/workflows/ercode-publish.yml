@@ -1,0 +1,37 @@
+name: ercode publish completed builds
+run-name: Publish er ${{ inputs.tag }} from completed builds
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+        default: "0.166.0"
+      runs:
+        description: Comma-separated build workflow run IDs (include retries)
+        type: string
+        required: true
+permissions:
+  contents: write
+  actions: read
+concurrency:
+  group: ercode-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Wait, verify four native packages, and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          BUILD_RUNS: ${{ inputs.runs }}
+        run: python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$BUILD_RUNS"
