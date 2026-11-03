@@ -2176,6 +2176,10 @@ pub enum PrivateSessionEventPayload {
 /// Unlike TokenCountEvent, this is not accumulated, estimated, or replayed.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 pub struct RawResponseCompletedEvent {
+    /// Wall-clock milliseconds for this model request, excluding time between requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub request_duration_ms: Option<u64>,
     pub response_id: String,
     pub token_usage: Option<TokenUsage>,
     pub usage_metadata: Option<crate::ResponseUsageMetadata>,

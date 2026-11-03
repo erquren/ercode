@@ -15352,6 +15352,15 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "Internal-only notification containing the exact usage from one upstream Responses API completion.",
       "properties": {
+        "requestDurationMs": {
+          "description": "Wall-clock milliseconds for this model request, excluding time between requests.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "responseId": {
           "type": "string"
         },

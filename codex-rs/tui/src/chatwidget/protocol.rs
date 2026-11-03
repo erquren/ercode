@@ -58,6 +58,22 @@ impl ChatWidget {
                     );
                 }
             }
+            ServerNotification::RawResponseCompleted(notification) => {
+                if !from_replay
+                    && self.last_turn_id() == Some(notification.turn_id.as_str())
+                    && self
+                        .thread_id()
+                        .is_some_and(|id| id.to_string() == notification.thread_id)
+                {
+                    self.turn_lifecycle.token_rates.record(
+                        &notification.response_id,
+                        notification
+                            .usage
+                            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+                        notification.request_duration_ms,
+                    );
+                }
+            }
             ServerNotification::ThreadTokenUsageUpdated(notification) => {
                 self.set_token_info(Some(token_usage_info_from_app_server(
                     notification.token_usage,
@@ -153,19 +169,40 @@ impl ChatWidget {
                 self.on_plan_delta(notification.delta);
             }
             ServerNotification::ReasoningSummaryTextDelta(notification) => {
+                if !from_replay
+                    && !self.is_realtime_delegated_reasoning_item(
+                        &notification.turn_id,
+                        &notification.item_id,
+                    )
+                {
+                    self.bottom_pane.record_reasoning_output(
+                        &notification.item_id,
+                        &notification.delta,
+                        /*raw*/ false,
+                    );
+                }
                 if !self.is_realtime_delegated_reasoning_item(
                     &notification.turn_id,
                     &notification.item_id,
                 ) && self.status_state.reasoning_item_id.as_deref()
                     == Some(&notification.item_id)
                 {
-                    if !from_replay && !self.config.show_raw_agent_reasoning {
-                        self.bottom_pane.record_output(&notification.delta);
-                    }
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }
             ServerNotification::ReasoningTextDelta(notification) => {
+                if !from_replay
+                    && !self.is_realtime_delegated_reasoning_item(
+                        &notification.turn_id,
+                        &notification.item_id,
+                    )
+                {
+                    self.bottom_pane.record_reasoning_output(
+                        &notification.item_id,
+                        &notification.delta,
+                        /*raw*/ true,
+                    );
+                }
                 if self.config.show_raw_agent_reasoning
                     && !self.is_realtime_delegated_reasoning_item(
                         &notification.turn_id,
@@ -173,9 +210,6 @@ impl ChatWidget {
                     )
                     && self.status_state.reasoning_item_id.as_deref() == Some(&notification.item_id)
                 {
-                    if !from_replay {
-                        self.bottom_pane.record_output(&notification.delta);
-                    }
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }
@@ -401,7 +435,6 @@ impl ChatWidget {
             | ServerNotification::ThreadUnarchived(_)
             | ServerNotification::ThreadAttachmentUpdated(_)
             | ServerNotification::RawResponseItemCompleted(_)
-            | ServerNotification::RawResponseCompleted(_)
             | ServerNotification::CommandExecOutputDelta(_)
             | ServerNotification::ProcessOutputDelta(_)
             | ServerNotification::ProcessExited(_)

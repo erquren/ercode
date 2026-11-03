@@ -199,3 +199,15 @@ fn completion_rendering_uses_the_captured_display_date() {
     insta::assert_snapshot!(cell.display_lines(/*width*/ 80)[0].to_string(), @"  2:32 PM");
     assert_eq!(cell.raw_lines(), vec![Line::from("2:32 PM")]);
 }
+
+#[test]
+fn completion_label_places_separate_token_rates_before_the_timestamp() {
+    let completed = completed_at();
+    let cell = FinalMessageSeparator::new(Some(44), None)
+        .with_token_rates(Some((1200, 34)))
+        .with_completed_at(completed, ClockFormat::TwelveHour);
+    assert_eq!(
+        cell.label(completed.date_naive()).unwrap(),
+        "Worked for 44s • in 1200t/s • out 34t/s • 2:32 PM"
+    );
+}

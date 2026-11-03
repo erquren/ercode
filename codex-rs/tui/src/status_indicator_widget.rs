@@ -238,7 +238,10 @@ impl StatusIndicator<'_> {
             .timer
             .output_rate
             .as_ref()
-            .map(|rate| format!(" · ~{}t/s", rate.tokens_per_second(now)))
+            .map(|rate| match rate.tokens_per_second(now) {
+                Some(tokens) => format!(" · ~{tokens}t/s"),
+                None => " · --t/s".to_string(),
+            })
             .unwrap_or_default();
         let progress =
             MotionMode::from_animations_enabled(row.animations_enabled && row.effects.progress);

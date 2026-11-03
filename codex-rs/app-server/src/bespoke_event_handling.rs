@@ -1243,6 +1243,7 @@ pub(crate) async fn apply_bespoke_event_handling(
         }
         EventMsg::RawResponseCompleted(raw_response_completed_event) => {
             let notification = RawResponseCompletedNotification {
+                request_duration_ms: raw_response_completed_event.request_duration_ms,
                 thread_id: conversation_id.to_string(),
                 turn_id: event_turn_id,
                 response_id: raw_response_completed_event.response_id,

@@ -832,6 +832,7 @@ async fn drain_to_completed(
     phase: CompactionPhase,
 ) -> CodexResult<CompactionResponse> {
     let mut includes_reasoning = turn_context.model_info().use_responses_lite;
+    let model_request_started_at = Instant::now();
     let mut stream = client_session
         .stream(
             prompt,
@@ -873,6 +874,9 @@ async fn drain_to_completed(
                 usage_metadata,
                 ..
             }) => {
+                let request_duration_ms =
+                    u64::try_from(model_request_started_at.elapsed().as_millis())
+                        .unwrap_or(u64::MAX);
                 if !matches!(phase, CompactionPhase::PostTurn) {
                     for item in std::mem::take(&mut output) {
                         sess.record_annotated_conversation_items(
@@ -894,6 +898,7 @@ async fn drain_to_completed(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    Some(request_duration_ms),
                 )
                 .await;
                 sess.update_token_usage_info(

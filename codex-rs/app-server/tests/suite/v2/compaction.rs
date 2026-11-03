@@ -558,9 +558,11 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
     assert_eq!(started.thread_id, thread_id);
     assert_eq!(completed.thread_id, thread_id);
     assert_eq!(started_id, completed_id);
+    assert!(raw_completed.request_duration_ms.is_some());
     assert_eq!(
         raw_completed,
         RawResponseCompletedNotification {
+            request_duration_ms: raw_completed.request_duration_ms,
             thread_id: thread_id.clone(),
             turn_id: started.turn_id,
             response_id: "r1".to_string(),

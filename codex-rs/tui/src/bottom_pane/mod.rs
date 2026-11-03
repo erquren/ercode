@@ -747,6 +747,16 @@ impl BottomPane {
         }
     }
 
+    pub(crate) fn record_reasoning_output(&mut self, item_id: &str, text: &str, raw: bool) {
+        if self.is_task_running && !text.is_empty() {
+            if !self.status_timer.has_output_rate() {
+                self.start_output_rate();
+            }
+            self.status_timer
+                .record_reasoning_output(item_id, text, raw);
+        }
+    }
+
     pub(crate) fn set_status_timer_origin(&mut self, started_at: Option<Instant>) {
         self.status_timer.display_started_at = started_at;
         self.request_redraw();

@@ -5452,10 +5452,12 @@ impl Session {
         response_id: &str,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
+        request_duration_ms: Option<u64>,
     ) {
         self.send_event(
             turn_context,
             EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                request_duration_ms,
                 response_id: response_id.to_string(),
                 token_usage: usage.cloned(),
                 usage_metadata: usage_metadata.cloned(),

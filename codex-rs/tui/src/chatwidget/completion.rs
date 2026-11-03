@@ -44,6 +44,11 @@ impl ChatWidget {
             elapsed_seconds,
             /*runtime_metrics*/ None,
         );
+        let cell = if replay_kind.is_none() {
+            cell.with_token_rates(self.turn_lifecycle.token_rates.averages())
+        } else {
+            cell
+        };
         Some(match completed_at {
             Some(completed_at) => {
                 cell.with_completed_at(completed_at, crate::clock_format::ClockFormat::system())

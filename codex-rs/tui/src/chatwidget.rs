@@ -362,6 +362,7 @@ mod completion;
 mod realtime;
 mod realtime_settings;
 mod realtime_split_flap;
+mod turn_token_rates;
 pub(crate) use realtime::MAX_REPLAY_TRANSCRIPT_CELLS;
 pub(crate) use realtime::MAX_TRANSCRIPT_BYTES;
 pub(crate) use realtime::RealtimeFailureCause;

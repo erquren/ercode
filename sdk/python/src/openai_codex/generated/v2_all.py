@@ -9707,6 +9707,14 @@ class RawResponseCompletedNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
+    request_duration_ms: Annotated[
+        int | None,
+        Field(
+            alias="requestDurationMs",
+            description="Wall-clock milliseconds for this model request, excluding time between requests.",
+            ge=0,
+        ),
+    ] = None
     response_id: Annotated[str, Field(alias="responseId")]
     thread_id: Annotated[str, Field(alias="threadId")]
     turn_id: Annotated[str, Field(alias="turnId")]

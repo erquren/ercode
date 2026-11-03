@@ -2851,6 +2851,7 @@ async fn try_run_sampling_request(
     } else {
         None
     };
+    let model_request_started_at = Instant::now();
     let stream = client_session
         .stream(
             &prompt,
@@ -3351,6 +3352,9 @@ async fn try_run_sampling_request(
                 usage_metadata,
                 end_turn,
             } => {
+                let request_duration_ms =
+                    u64::try_from(model_request_started_at.elapsed().as_millis())
+                        .unwrap_or(u64::MAX);
                 response_completed = true;
                 request_token_usage = token_usage.clone();
                 sess.services
@@ -3375,6 +3379,7 @@ async fn try_run_sampling_request(
                     &response_id,
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
+                    Some(request_duration_ms),
                 )
                 .await;
                 let budget_result = sess

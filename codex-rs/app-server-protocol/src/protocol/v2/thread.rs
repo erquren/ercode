@@ -2020,6 +2020,10 @@ pub struct ThreadTokenUsageUpdatedNotification {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct RawResponseCompletedNotification {
+    /// Wall-clock milliseconds for this model request, excluding time between requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub request_duration_ms: Option<u64>,
     pub thread_id: String,
     pub turn_id: String,
     pub response_id: String,

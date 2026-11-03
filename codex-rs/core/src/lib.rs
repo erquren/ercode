@@ -4,6 +4,8 @@
 // user-visible output must go through the appropriate abstraction (e.g.,
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// Request telemetry adds to the deeply nested async tool/session types.
+#![recursion_limit = "256"]
 
 mod apply_patch;
 mod apps;

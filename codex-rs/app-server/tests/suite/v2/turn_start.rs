@@ -1314,6 +1314,26 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
     expected_amount: Option<&str>,
     extra: Option<Value>,
 ) -> Result<()> {
+    assert_response_usage_notification(upstream_metadata, expected_amount, extra, true).await
+}
+
+#[tokio::test]
+async fn turn_start_reports_numeric_usage_without_raw_provider_metadata() -> Result<()> {
+    assert_response_usage_notification(
+        Some(json!({ "amount": "0.125" })),
+        Some("0.125"),
+        Some(json!({ "private": "provider metadata" })),
+        false,
+    )
+    .await
+}
+
+async fn assert_response_usage_notification(
+    upstream_metadata: Option<Value>,
+    expected_amount: Option<&str>,
+    extra: Option<Value>,
+    raw_events: bool,
+) -> Result<()> {
     let server = responses::start_mock_server().await;
     let mut completed = json!({
         "type": "response.completed",
@@ -1356,7 +1376,7 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
 
     let ThreadStartResponse { thread, .. } = mcp
         .start_thread(ThreadStartParams {
-            experimental_raw_events: true,
+            experimental_raw_events: raw_events,
             ..Default::default()
         })
         .await?;
@@ -1394,13 +1414,19 @@ async fn turn_start_emits_raw_response_completed_with_upstream_usage(
         anyhow::bail!("expected rawResponse/completed notification");
     };
 
+    assert!(notification.request_duration_ms.is_some());
     assert_eq!(
         notification,
         RawResponseCompletedNotification {
+            request_duration_ms: notification.request_duration_ms,
             thread_id: thread.id,
             turn_id: turn.id,
             response_id: "resp-1".to_string(),
-            usage_metadata: serde_json::from_value(expected_metadata)?,
+            usage_metadata: if raw_events {
+                serde_json::from_value(expected_metadata)?
+            } else {
+                None
+            },
             usage: Some(TokenUsageBreakdown {
                 total_tokens: 37,
                 input_tokens: 30,

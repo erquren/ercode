@@ -37,6 +37,12 @@ impl StatusTimer {
         }
     }
 
+    pub(crate) fn record_reasoning_output(&mut self, item_id: &str, text: &str, raw: bool) {
+        if let Some(rate) = &mut self.output_rate {
+            rate.record_reasoning(item_id, text, raw, Instant::now());
+        }
+    }
+
     pub(crate) fn has_output_rate(&self) -> bool {
         self.output_rate.is_some()
     }

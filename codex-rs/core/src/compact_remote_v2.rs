@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use crate::compact_retained_tool_outputs::is_retained_tool_output;
 
@@ -316,6 +317,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context,
                 stream,
                 CompactionRequestKind::Background(&cancellation),
+                None,
             )
             .await;
         }
@@ -329,6 +331,7 @@ async fn run_remote_compaction_request_v2(
         .min(MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES);
     let mut retry_state = ResponsesStreamRetryState::default();
     loop {
+        let model_request_started_at = Instant::now();
         let result = match client_session
             .stream(
                 prompt,
@@ -349,6 +352,7 @@ async fn run_remote_compaction_request_v2(
                     turn_context,
                     stream,
                     CompactionRequestKind::Foreground,
+                    Some(model_request_started_at),
                 )
                 .await
             }
@@ -377,6 +381,7 @@ async fn collect_compaction_output(
     turn_context: &TurnContext,
     mut stream: ResponseStream,
     request_kind: CompactionRequestKind<'_>,
+    model_request_started_at: Option<Instant>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
@@ -433,6 +438,8 @@ async fn collect_compaction_output(
                 usage_metadata,
                 ..
             } => {
+                let request_duration_ms = model_request_started_at
+                    .map(|start| u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX));
                 match request_kind {
                     CompactionRequestKind::Background(_) => {
                         if let Some(usage) = token_usage.as_ref() {
@@ -446,6 +453,7 @@ async fn collect_compaction_output(
                             &response_id,
                             token_usage.as_ref(),
                             usage_metadata.as_ref(),
+                            request_duration_ms,
                         )
                         .await;
                     }
@@ -1317,6 +1325,7 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Background(&cancellation),
+            None,
         )
         .await;
 
@@ -1357,6 +1366,7 @@ mod tests {
             &turn,
             stream,
             CompactionRequestKind::Background(&CancellationToken::new()),
+            None,
         )
         .await;
 
@@ -1413,6 +1423,7 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Foreground,
+            None,
         )
         .await
         .expect("compaction should be collected");

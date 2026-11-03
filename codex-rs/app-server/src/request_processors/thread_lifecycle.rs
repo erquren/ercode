@@ -530,7 +530,7 @@ async fn start_listener(
                     .await;
                 }
                 event = conversation.next_event() => {
-                    let event = match event {
+                    let mut event = match event {
                         Ok(event) => event,
                         Err(err) => {
                             tracing::warn!("thread.next_event() failed with: {err}");
@@ -557,9 +557,17 @@ async fn start_listener(
                             .then(|| thread_state.turn_summary.clone());
                         (thread_state.experimental_raw_events, terminal)
                     };
+                    // Per-request numeric usage/timing is useful to ordinary TUI clients too.
+                    // Keep provider-specific metadata behind the raw-event opt-in, just like
+                    // raw response items and private-session content.
+                    if !raw_events_enabled
+                        && let EventMsg::RawResponseCompleted(completed) = &mut event.msg
+                    {
+                        completed.usage_metadata = None;
+                    }
                     if matches!(
                         &event.msg,
-                        EventMsg::RawResponseItem(_) | EventMsg::RawResponseCompleted(_) | EventMsg::PrivateSessionEvent(_)
+                        EventMsg::RawResponseItem(_) | EventMsg::PrivateSessionEvent(_)
                     ) && !raw_events_enabled
                     {
                         continue;

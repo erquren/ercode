@@ -18,6 +18,7 @@ use chrono::NaiveDate;
 #[derive(Debug)]
 pub struct FinalMessageSeparator {
     elapsed_seconds: Option<u64>,
+    token_rates: Option<(u64, u64)>,
     runtime_metrics: Option<RuntimeMetricsSummary>,
     completed_at: Option<DateTime<Local>>,
     display_date: NaiveDate,
@@ -31,11 +32,17 @@ impl FinalMessageSeparator {
     ) -> Self {
         Self {
             elapsed_seconds,
+            token_rates: None,
             runtime_metrics,
             completed_at: None,
             display_date: Local::now().date_naive(),
             clock_format: ClockFormat::TwelveHour,
         }
+    }
+
+    pub(crate) fn with_token_rates(mut self, rates: Option<(u64, u64)>) -> Self {
+        self.token_rates = rates;
+        self
     }
 
     pub(crate) fn with_completed_at(
@@ -72,6 +79,10 @@ impl FinalMessageSeparator {
                 format!("{seconds}s")
             };
             label_parts.push(format!("Worked for {elapsed}"));
+        }
+        if let Some((input, output)) = self.token_rates {
+            label_parts.push(format!("in {input}t/s"));
+            label_parts.push(format!("out {output}t/s"));
         }
         if let Some(completed_at) = self.completed_at {
             let date_format = if completed_at.date_naive() == today {
