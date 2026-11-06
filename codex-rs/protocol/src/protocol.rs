@@ -1187,8 +1187,9 @@ pub enum AskForApproval {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 pub struct GranularApprovalConfig {
-    /// Whether to allow shell command approval requests, including inline
+    /// Whether to allow sandbox escalation approval requests, including inline
     /// `with_additional_permissions` and `require_escalated` requests.
+    /// Dangerous commands can still request approval within existing permissions.
     pub sandbox_approval: bool,
     /// Whether to allow prompts triggered by execpolicy `prompt` rules.
     pub rules: bool,
@@ -2334,6 +2335,11 @@ pub struct ErrorEvent {
     pub message: String,
     #[serde(default)]
     pub codex_error_info: Option<CodexErrorInfo>,
+    /// Host-only file identities proven rejected against the submitted request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub rejected_audio_file_ids: Vec<String>,
     /// Sensitive explanation and steering are delivered live but never enter rollout storage.
     #[serde(skip)]
     #[schemars(skip)]
@@ -2481,6 +2487,11 @@ pub struct ThreadSettingsSnapshot {
     pub service_tier: Option<String>,
     pub approval_policy: AskForApproval,
     pub approvals_reviewer: ApprovalsReviewer,
+    /// Original selection before managed policy resolved the effective reviewer.
+    /// Older histories contain only `approvals_reviewer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requested_approvals_reviewer: Option<ApprovalsReviewer>,
     pub permission_profile: PermissionProfile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -3627,6 +3638,10 @@ pub struct TurnContextItem {
     /// Root turn that owns this turn's attribution, retained across recovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_turn_id: Option<String>,
+    /// Explicit routing for this turn. An empty list clears the thread's direct namespaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub direct_only_tool_namespaces: Option<Vec<String>>,
     /// Plugin selection captured for this turn. Absent in older histories.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -6175,6 +6190,7 @@ mod tests {
             misalignment: None,
             message: "rollback failed".into(),
             codex_error_info: Some(CodexErrorInfo::ThreadRollbackFailed),
+            rejected_audio_file_ids: Vec::new(),
         };
         assert!(!event.affects_turn_status());
     }
@@ -6187,6 +6203,7 @@ mod tests {
             codex_error_info: Some(CodexErrorInfo::ActiveTurnNotSteerable {
                 turn_kind: NonSteerableTurnKind::Review,
             }),
+            rejected_audio_file_ids: Vec::new(),
         };
         assert!(!event.affects_turn_status());
     }
@@ -6197,6 +6214,7 @@ mod tests {
             misalignment: None,
             message: "generic".into(),
             codex_error_info: Some(CodexErrorInfo::Other),
+            rejected_audio_file_ids: Vec::new(),
         };
         assert!(event.affects_turn_status());
     }
@@ -6206,6 +6224,7 @@ mod tests {
         let event = ErrorEvent {
             message: "This request violated the misalignment policy.".to_string(),
             codex_error_info: Some(CodexErrorInfo::MisalignmentPolicyViolation),
+            rejected_audio_file_ids: Vec::new(),
             misalignment: Some(MisalignmentErrorDetails {
                 error_type: Some("unauthorized_data_transfer".to_string()),
                 detailed_explanation: Some("Sensitive customer explanation".to_string()),
@@ -6232,6 +6251,22 @@ mod tests {
         assert!(!debug.contains("Sensitive customer explanation"));
         assert!(!debug.contains("Sensitive customer steering"));
         assert!(!debug.contains("sensitive-review-target"));
+    }
+
+    #[test]
+    fn rejected_audio_identity_round_trips_for_host_recovery() {
+        let event = ErrorEvent {
+            message: "invalid recording".to_string(),
+            codex_error_info: Some(CodexErrorInfo::BadRequest),
+            rejected_audio_file_ids: vec!["file_audio".to_string()],
+            misalignment: None,
+        };
+
+        let serialized = serde_json::to_value(&event).expect("serialize error event");
+        assert_eq!(serialized["rejected_audio_file_ids"], json!(["file_audio"]));
+        let restored: ErrorEvent =
+            serde_json::from_value(serialized).expect("deserialize error event");
+        assert_eq!(restored.rejected_audio_file_ids, vec!["file_audio"]);
     }
 
     #[test]
@@ -6567,6 +6602,7 @@ mod tests {
         let item = TurnContextItem {
             turn_id: None,
             root_turn_id: None,
+            direct_only_tool_namespaces: None,
             disabled_plugin_ids: None,
             cwd: test_path_buf("/tmp").abs(),
             approval_policy: AskForApproval::Never,

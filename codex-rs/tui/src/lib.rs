@@ -204,12 +204,15 @@ mod resume_picker;
 mod screen_reader;
 mod service_tier_resolution;
 mod session_archive_commands;
+mod session_lock;
 mod session_log;
 mod session_queue_commands;
 mod session_resume;
 mod session_start;
 mod session_state;
 mod shortcut_help;
+mod sidebar_chooser;
+mod sidebar_tab_strip;
 mod skills_helpers;
 mod slash_command;
 mod startup_draft;
@@ -1381,28 +1384,23 @@ async fn run_ratatui_app(
     #[cfg(target_os = "windows")]
     let mut trust_decision_was_made = false;
     let startup_model_provider = initial_config.model_provider_id.clone();
-    let (login_status, mut startup_account) = if workload_identity_selected {
-        (LoginStatus::AuthMode(AuthMode::Chatgpt), None)
-    } else {
-        let Some(active_app_server) = app_server.as_mut() else {
-            unreachable!("app server should exist when auth is required");
-        };
-        let login_status = startup_draft
-            .run_until(&mut tui, get_login_status(active_app_server))
-            .await;
-        match login_status {
-            Ok(Ok((login_status, account))) => (login_status, Some(account)),
-            Ok(Err(err)) => {
-                shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
-                return Err(err);
-            }
-            Err(err) => {
-                shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
-                return Err(err.into());
-            }
+    let Some(active_app_server) = app_server.as_mut() else {
+        unreachable!("app server should exist when auth is required");
+    };
+    let login_status = startup_draft
+        .run_until(&mut tui, get_login_status(active_app_server))
+        .await;
+    let (login_status, mut startup_account) = match login_status {
+        Ok(Ok((login_status, account))) => (login_status, Some(account)),
+        Ok(Err(err)) => {
+            shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+            return Err(err);
+        }
+        Err(err) => {
+            shutdown_startup_session(app_server.take(), &mut terminal_restore_guard).await;
+            return Err(err.into());
         }
     };
-    // Workload identity bypasses interactive login; every other provider uses account/read.
     let requires_openai_auth = startup_account
         .as_ref()
         .is_some_and(|account| account.requires_openai_auth);
@@ -1899,8 +1897,7 @@ async fn run_ratatui_app(
     if config.model_provider_id != startup_model_provider {
         startup_account = None;
         if matches!(&app_server_target, AppServerTarget::Embedded) {
-            // App-server providers are fixed at startup, so onboarding cannot
-            // reuse a server initialized before it persisted another provider.
+            // Rebuild the embedded server with the final local configuration.
             shutdown_app_server_if_present(app_server.take()).await;
         }
     }
@@ -2153,7 +2150,6 @@ async fn run_ratatui_app(
     let hooks_request_handle = app_server.request_handle();
     let hooks_cwd = config.cwd.to_path_buf();
     let server_owned_fresh_bootstrap = app::startup_bootstrap::uses_server_owned_fresh_bootstrap(
-        &app_server_target,
         &session_selection,
         &loader_overrides,
     );
@@ -2163,6 +2159,8 @@ async fn run_ratatui_app(
             || !matches!(app_server_target, AppServerTarget::Embedded));
     let guidance_request_handle = app_server.request_handle();
     let startup_prefetch_started_at = Instant::now();
+    // Fetch the catalog alongside hooks/list. Fresh starts choose the model after config/read.
+    app_server.prefetch_model_list();
     let startup_prefetch = startup_draft
         .run_until(&mut tui, async {
             tokio::join!(
@@ -2520,7 +2518,12 @@ fn should_show_provider_setup_wizard(
     app_server_target: &AppServerTarget,
     feature: Feature,
 ) -> bool {
-    matches!(app_server_target, AppServerTarget::Embedded)
+    let supported_target = match app_server_target {
+        AppServerTarget::Embedded => true,
+        AppServerTarget::LocalDaemon { .. } => feature == Feature::BedrockSetupWizard,
+        AppServerTarget::Remote { .. } => false,
+    };
+    supported_target
         && should_show_login_screen(login_status, requires_openai_auth)
         && config.features.enabled(feature)
         && config.model_provider_id == "openai"

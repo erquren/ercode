@@ -21,6 +21,7 @@
 //! unread notifications cannot prevent request responses from being delivered.
 
 mod cloud;
+pub mod cloud_backend;
 mod path;
 mod remote;
 mod remote_websocket;
@@ -28,6 +29,7 @@ pub use cloud::CloudClient;
 pub use cloud::CloudCommand;
 pub use cloud::CloudOperation;
 pub use cloud::CloudRequestHandle;
+pub use cloud::CloudUserMessageReceipt;
 mod server_request;
 pub use server_request::AppServerReplyHandle;
 

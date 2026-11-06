@@ -90,6 +90,7 @@ use codex_feedback::CodexFeedback;
 use codex_goal_extension::GoalService;
 use codex_home::CodexHomeUserInstructionsProvider;
 use codex_login::AuthManager;
+use codex_models_manager::manager::ModelCatalogSettings;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_protocol::ThreadId;
 use codex_protocol::mcp::ClientMcpExtensions;
@@ -97,6 +98,7 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_queue_extension::QueuedItemService;
 use codex_rollout::StateDbHandle;
+use codex_runtime_agent_instance::RuntimeAuthSlot;
 use codex_state::log_db::LogDbLayer;
 use codex_thread_store::LocalQueueStore;
 use codex_thread_store::QueueStore;
@@ -274,6 +276,7 @@ pub(crate) struct MessageProcessorArgs {
     pub(crate) startup_warnings_tx: mpsc::UnboundedSender<String>,
     pub(crate) session_source: SessionSource,
     pub(crate) auth_manager: Arc<AuthManager>,
+    pub(crate) runtime_auth_slot: Option<RuntimeAuthSlot>,
     pub(crate) user_verification: Arc<crate::user_verification::Service>,
     pub(crate) installation_id: String,
     pub(crate) code_mode_session_provider: Option<Arc<dyn CodeModeSessionProvider>>,
@@ -303,6 +306,7 @@ impl MessageProcessor {
             startup_warnings_tx,
             session_source,
             auth_manager,
+            runtime_auth_slot,
             user_verification,
             installation_id,
             code_mode_session_provider,
@@ -319,22 +323,27 @@ impl MessageProcessor {
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.
-        let mut thread_store = ThreadStoreBuilder::from_config(config.as_ref(), state_db.clone());
-        if config.features.enabled(Feature::GuardianV3) {
-            let sqlite = config.sqlite_config().clone();
-            thread_store = thread_store.with_additional_cleanup(move |thread_ids| {
+        let sqlite = config.sqlite_config().clone();
+        let guardian_v3_enabled = config.features.enabled(Feature::GuardianV3);
+        let thread_store = ThreadStoreBuilder::from_config(config.as_ref(), state_db.clone())
+            .with_additional_cleanup(move |thread_ids| {
                 let sqlite = sqlite.clone();
                 Box::pin(async move {
-                    let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
-                    codex_guardian_v3::delete_local_boards(&sqlite, &boards)
-                        .await
-                        .map_err(|err| ThreadStoreError::Internal {
-                            message: format!("failed to delete Guardian evidence boards: {err}"),
-                        })
+                    crate::delete_agent_message_boards(&sqlite, &thread_ids).await?;
+                    if guardian_v3_enabled {
+                        let boards = thread_ids.into_iter().map(Into::into).collect::<Vec<_>>();
+                        codex_guardian_v3::delete_local_boards(&sqlite, &boards)
+                            .await
+                            .map_err(|err| ThreadStoreError::Internal {
+                                message: format!(
+                                    "failed to delete Guardian evidence boards: {err}"
+                                ),
+                            })?;
+                    }
+                    Ok(())
                 })
-            });
-        }
-        let thread_store = thread_store.build();
+            })
+            .build();
         // Queue persistence requires SQLite, so in-memory thread stores and
         // app servers without a state database do not have a queue backend.
         let queue_store: Option<Arc<dyn QueueStore>> = match &config.experimental_thread_store {
@@ -348,7 +357,6 @@ impl MessageProcessor {
         let restriction_product = session_source.restriction_product();
         let executor_skill_provider: Arc<dyn codex_skills_extension::SkillProvider> = Arc::new(
             codex_skills_extension::ExecutorSkillProvider::new_with_restriction_product(
-                Arc::clone(&environment_manager_for_extensions),
                 restriction_product,
             ),
         );
@@ -367,10 +375,15 @@ impl MessageProcessor {
                     Arc::clone(&extension_event_sink),
                 ))
             });
-            let manager = ThreadManager::new(
+            let startup = codex_core::build_startup_models(
                 config.as_ref(),
                 auth_manager.clone(),
-                codex_core::build_models_manager(config.as_ref(), auth_manager.clone()),
+                installation_id,
+                Arc::new(ModelCatalogSettings::disk(config.codex_home.to_path_buf())),
+            );
+            let manager = ThreadManager::new(
+                config.as_ref(),
+                startup,
                 codex_core::CodexAppsToolsCache::default(),
                 session_source,
                 environment_manager,
@@ -400,7 +413,6 @@ impl MessageProcessor {
                 codex_core::passthrough_image_store(),
                 Arc::clone(&thread_store),
                 codex_core::local_agent_graph_store_from_state_db(state_db.as_ref()),
-                installation_id,
                 Some(app_server_attestation_provider(
                     outgoing.clone(),
                     thread_state_manager.clone(),
@@ -416,16 +428,23 @@ impl MessageProcessor {
                 None => manager,
             }
         });
+        let runtime_auth = thread_manager.runtime_auth_manager();
+        if let (Some(slot), Some(runtime)) = (runtime_auth_slot, &runtime_auth) {
+            // Analytics starts before the harness. Bind its requests to the harness registration.
+            slot.get_or_init(|| Arc::clone(runtime));
+        }
         let model_catalog = Arc::new(crate::model_catalog::ModelCatalog::new(
             config_manager.clone(),
             startup_cwd,
             Arc::clone(&config),
-            thread_manager.get_models_manager(),
-            Arc::clone(&auth_manager),
+            Arc::clone(&thread_manager),
         ));
         let models_refresh_worker = crate::models_refresh_worker::spawn(&model_catalog);
-        let turn_cost_worker =
-            TurnCostWorker::spawn(Arc::clone(&config), Arc::clone(&auth_manager));
+        let turn_cost_worker = TurnCostWorker::spawn(
+            Arc::clone(&config),
+            Arc::clone(&auth_manager),
+            runtime_auth.map(|runtime| (runtime, config.runtime_auth_mode)),
+        );
         thread_manager
             .plugins_manager()
             .set_analytics_events_client(analytics_events_client.clone());
@@ -465,7 +484,6 @@ impl MessageProcessor {
             Arc::clone(&model_catalog),
         );
         let apps_processor = AppsRequestProcessor::new(
-            auth_manager.clone(),
             Arc::clone(&thread_manager),
             outgoing.clone(),
             config_manager.clone(),
@@ -574,7 +592,6 @@ impl MessageProcessor {
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
         );
         if let Some(startup_config) = plugin_startup_tasks {
-            // Keep plugin startup warmups aligned at app-server startup.
             let reload_config = match startup_config {
                 PluginStartupConfig::Current => {
                     plugin_config_reload::for_cwd(config_manager.clone(), config.cwd.clone())
@@ -589,7 +606,6 @@ impl MessageProcessor {
                 .plugins_manager()
                 .maybe_start_plugin_startup_tasks_for_config(
                     &config.plugins_config_input(),
-                    config.features.enabled(Feature::PluginDiscoveryPrefetch),
                     reload_config,
                     Some(on_effective_plugins_changed),
                     startup_warnings_tx,
@@ -1612,7 +1628,9 @@ impl MessageProcessor {
                 self.thread_processor.thread_turns_list(params).await
             }
             ClientRequest::ThreadItemsList { params, .. } => {
-                self.thread_processor.thread_items_list(params).await
+                self.thread_processor
+                    .thread_items_list(&request_id, params)
+                    .await
             }
             ClientRequest::ThreadItemsRead { params, .. } => {
                 self.thread_processor.thread_items_read(params).await

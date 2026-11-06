@@ -896,6 +896,7 @@ client_request_definitions! {
     },
     ThreadItemsList => "thread/items/list" {
         params: v2::ThreadItemsListParams,
+        inspect_params: true,
         // Explicitly concurrent: this primarily reads append-only rollout storage.
         serialization: None,
         response: v2::ThreadItemsListResponse,
@@ -2569,6 +2570,7 @@ mod tests {
         let mcp_resource_read = ClientRequest::McpResourceRead {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
+                meta: None,
                 thread_id: Some("thread-1".to_string()),
                 origin_call_id: None,
                 server: "server-a".to_string(),
@@ -2756,6 +2758,7 @@ mod tests {
                 cursor: None,
                 limit: None,
                 sort_direction: None,
+                defer_output: None,
             },
         };
         assert_eq!(thread_items_list.serialization_scope(), None);
@@ -2763,6 +2766,7 @@ mod tests {
         let mcp_resource_read = ClientRequest::McpResourceRead {
             request_id: request_id(),
             params: v2::McpResourceReadParams {
+                meta: None,
                 thread_id: None,
                 origin_call_id: None,
                 server: "server-a".to_string(),
@@ -3778,7 +3782,8 @@ mod tests {
                 "params": {
                     "limit": null,
                     "cursor": null,
-                    "includeHidden": null
+                    "includeHidden": null,
+                    "modelProvider": null
                 }
             }),
             serde_json::to_value(&request)?,

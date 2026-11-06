@@ -121,12 +121,18 @@ denial limit, and interrupted status; neither emits a separate `Error` event.
 
 # Model catalog provider requirements
 
-`model/list` and periodic model catalog refreshes check the startup provider against
-current managed provider requirements before using the catalog. If that provider no longer
+`model/list` accepts an optional `modelProvider` to list models for a configured provider
+other than the startup default. For example, `{"modelProvider": "my_gateway"}` returns that
+provider's models after the user's default changes. Omit it to retain the startup provider
+and caching behavior. Explicit selections use the provider definitions loaded at startup. Restart the server
+to pick up edits to those definitions. An unknown selector returns JSON-RPC error
+`-32600` with `data.type = "modelProviderNotConfigured"` and the requested `modelProvider`.
+
+`model/list` checks its selected provider, and periodic model catalog refreshes check the
+startup provider, against current managed provider requirements. If that provider no longer
 complies, `model/list` returns JSON-RPC error `-32600` asking the client to restart Codex,
 and background refreshes skip the old endpoint. Requirement load failures also block these
-operations. Checks apply even when the catalog is cached. Existing startup provider selection
-and caching behavior remain in effect while the provider satisfies current requirements.
+operations. Checks apply even when the catalog is cached.
 
 # MCP App UI
 
@@ -140,6 +146,14 @@ render without waiting for the full MCP catalog.
 The field is null for older history and tools that declare widgets only in
 result metadata; clients retain catalog discovery for those calls. Existing
 resource URI fields remain available for older clients.
+
+Clients can pass an optional `_meta` object on `mcpServer/resource/read`.
+The app server forwards its entries to MCP `resources/read`, including reads
+bound to an originating tool call. The keys `x-codex-turn-metadata`, `threadId`,
+and `codex/connectionLease` are reserved for host context on every MCP server. Reads to `codex_apps`
+additionally reserve `connector_id`, `link_id`, and the nested
+`_codex_apps.resource_uri` field for hosted app routing. A request that includes
+a reserved field in `_meta` is rejected before the MCP read is sent.
 
 # Initial Daybreak choice (experimental)
 
@@ -343,16 +357,13 @@ be loaded. This covers turn start/steer, review, compaction, manual queue start,
 updates. Realtime connections use separate routing configuration and are not checked here.
 Interrupt, realtime stop, and goal pause/clear remain available.
 
-Resume and input RPCs also reject a thread whose saved provider differs from the current
-configured provider, including profile and app-server launch overrides. The JSON-RPC error's
-`data` contains `ModelProviderError`: `modelProviderMismatch` has `modelProvider` and
-`currentModelProvider`, `modelProviderNotConfigured` identifies a missing provider, and
-`modelProviderPolicyConflict` identifies a mandatory-policy conflict. Clients can still use
-`thread/read` to display history and disable the composer with the error's explanation.
-Changing the resume request's provider does not bypass validation of the saved provider;
-switch the configured provider back to continue the chat. Input is also rejected when the
-current provider configuration cannot be loaded. Older clients retain their normal error
-fallback for unrecognized structured error variants.
+Resume and input use the thread's saved provider even when a different provider is the default.
+A cold resume resolves the saved provider from configuration. A loaded thread uses its retained
+provider configuration and checks current managed policy before accepting input. The JSON-RPC
+error's `data` contains `modelProviderNotConfigured` for a missing provider or
+`modelProviderPolicyConflict` for a mandatory-policy conflict. Clients can use `thread/read`
+to display history when input is blocked. A resume request that explicitly selects a
+different provider cannot change the thread's saved provider.
 
 ## Managed network requirements
 
@@ -599,8 +610,8 @@ process control and custom output caps do not apply to MXC.
 
 ### Gateway OAuth sign-in
 
-Providers configured with `gateway_oauth` require a secondary OAuth credential in
-addition to their primary authentication. Clients with a gateway sign-in UI set
+A provider can obtain its gateway token through browser OAuth or a credential
+export command. Clients with a gateway sign-in UI set
 `initialize.capabilities.explicitGatewayOauth: true`, complete initialization, and
 successfully call `account/gatewayOAuth/read` before sending authenticated requests,
 including startup `model/list` and inference requests. Repeat this probe on each
@@ -619,6 +630,16 @@ With explicit login enabled, app-server refreshes existing credentials, but only
 `account/gatewayOAuth/login` RPC starts browser authorization. Requests needing
 sign-in fail promptly so the client can offer that flow.
 
+Configure `[model_providers.<id>.gateway_oauth.credential_export]` to obtain the
+gateway access token from a command on first use. Set `command`, optional `args`,
+and optional `timeout_ms` (default 30000). The command prints one access token to
+stdout. Codex caches it in memory and applies the configured gateway header or
+cookie. Choose either `credential_export` or OAuth settings such as
+`authorization_url`, `token_url`, and `client_id`. If the command fails,
+the request returns the export error. Use direct
+inference and catalog URLs because command credentials require same-origin catalog
+access and reject HTTP redirects.
+
 Clients that omit the capability or set it to `false`, including the TUI, retain
 automatic browser authorization after initialization. Startup credential reads
 cannot open a browser before initialization. Explicit opt-in is shared by gateway
@@ -627,8 +648,9 @@ cannot be undone by a later connection that omits the capability.
 
 - `account/gatewayOAuth/read` returns the current effective `providerId`,
   `providerName`, `required`, `status`, and `error`. `required` indicates that this
-  provider uses gateway OAuth, including when already signed in. This operation
-  does not refresh tokens or open a browser; `status` is null for other providers.
+  provider uses gateway OAuth, including when already signed in. With a credential
+  exporter, `required` is false and `status` is null. This read does not refresh
+  tokens or open a browser.
   `notReady` means credentials are not ready. `succeeded` means saved credentials
   are locally usable, not that a gateway request has been verified. Reads observe
   usable replacement credentials saved by another process sharing the same home.
@@ -712,6 +734,14 @@ and out-of-scope item IDs return invalid params (`-32602`) with
 Omitted or null cursors preserve normal first-page behavior. Continue anchored
 pages with the returned opaque string `nextCursor`; response fields and
 `backwardsCursor` semantics are unchanged.
+
+Experimental clients can set `"deferOutput": {"commandExecution": true}`
+with a `turnId`. Omitted or false options keep the full output. Unknown fields in
+`deferOutput` are ignored.
+For a completed command with a recorded completion time, exit code zero, and
+nonempty saved output, the entry returns `outputDeferred: true` and
+`item.aggregatedOutput: null`. Use `thread/items/read` with that turn and item ID
+to retrieve the full output. All other entries retain their recorded output.
 
 ## Workspace switching (experimental)
 

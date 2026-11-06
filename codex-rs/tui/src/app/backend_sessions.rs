@@ -49,7 +49,8 @@ struct SessionEntry {
     preference_key: Option<String>,
     session: AppServerSession,
     listening: bool,
-    pending_requests: VecDeque<AppServerSessionEvent>,
+    pending_events: VecDeque<AppServerSessionEvent>,
+    side_startup: Vec<AppServerSessionEvent>,
 }
 
 /// A session's stable position in an append-only backend collection.
@@ -89,7 +90,8 @@ impl BackendSessions {
             preference_key: None,
             session,
             listening: true,
-            pending_requests: VecDeque::new(),
+            pending_events: VecDeque::new(),
+            side_startup: Vec::new(),
         });
     }
 
@@ -130,6 +132,10 @@ impl BackendSessions {
     }
 
     pub(super) fn set_preference_key(&mut self, owner: BackendId, key: &str) {
+        #[expect(
+            clippy::expect_used,
+            reason = "preference keys are assigned only after the backend is registered"
+        )]
         let slot = self.slot(owner).expect("registered app-server");
         assert!(
             !key.is_empty()
@@ -188,6 +194,22 @@ impl BackendSessions {
         self.listening_slot(owner).is_some()
     }
 
+    pub(super) fn replay_ready_side_startup(&mut self, app: &super::App) {
+        let owner = self.displayed_owner();
+        let entry = &mut self.entries[self.displayed.0];
+        entry
+            .pending_events
+            .extend(entry.side_startup.extract_if(.., |event| {
+                !app.defer_side_startup_notification(event, owner)
+            }));
+    }
+
+    pub(super) fn defer_side_startup(&mut self, event: AppServerSessionEvent) {
+        if let Some(slot) = self.slot(event.backend_id) {
+            self.entries[slot.0].side_startup.push(event);
+        }
+    }
+
     pub(super) fn resume_events(&mut self, owner: BackendId) {
         if let Some(entry) = self
             .entries
@@ -195,7 +217,8 @@ impl BackendSessions {
             .find(|entry| entry.session.backend_id() == owner)
         {
             entry.listening = true;
-            entry.pending_requests.clear();
+            entry.pending_events.clear();
+            entry.side_startup.clear();
         }
     }
 
@@ -213,7 +236,7 @@ impl BackendSessions {
                     continue;
                 }
                 let event = if owner == request_owner
-                    && let Some(event) = entry.pending_requests.pop_front()
+                    && let Some(event) = entry.pending_events.pop_front()
                 {
                     Some(event)
                 } else {
@@ -229,7 +252,7 @@ impl BackendSessions {
                         if owner != request_owner
                             && matches!(&event.event, AppServerEvent::ServerRequest(_)) =>
                     {
-                        entry.pending_requests.push_back(event);
+                        entry.pending_events.push_back(event);
                         cx.waker().wake_by_ref();
                         continue;
                     }
@@ -238,7 +261,7 @@ impl BackendSessions {
                 if let Some(AppServerSessionEvent { event: AppServerEvent::ServerNotification(notification), .. }) = &event
                     && let ServerNotification::ServerRequestResolved(resolved) = notification.as_ref()
                 {
-                    entry.pending_requests.retain(|pending| !matches!(
+                    entry.pending_events.retain(|pending| !matches!(
                         &pending.event, AppServerEvent::ServerRequest(request) if request.id() == &resolved.request_id
                     ));
                 }
@@ -246,7 +269,7 @@ impl BackendSessions {
                     .as_ref()
                     .is_none_or(|event| matches!(event.event, AppServerEvent::Disconnected { .. }))
                 {
-                    entry.pending_requests.clear();
+                    entry.pending_events.clear();
                 }
                 entry.listening = event.is_some();
                 self.next_source = (index + 1) % self.entries.len();

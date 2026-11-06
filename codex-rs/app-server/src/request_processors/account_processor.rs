@@ -18,6 +18,7 @@ use codex_model_provider::is_supported_amazon_bedrock_region;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_rmcp_client::EnterpriseOAuthCredentialGuard;
 
+mod backend_client;
 mod bedrock_gov_cloud;
 mod bedrock_setup;
 mod enterprise_login;
@@ -117,7 +118,7 @@ pub(crate) struct AccountRequestProcessor {
     workspace_routing_fetches: Arc<Mutex<workspace_routing::WorkspaceRoutingFetches>>,
     workspace_routing_shutdown: CancellationToken,
     gateway_login: Arc<std::sync::Mutex<Option<gateway_oauth::ActiveGatewayLogin>>>,
-    gateway_client: Arc<std::sync::Mutex<Option<Arc<codex_login::GatewayAuthManager>>>>,
+    gateway_client: Arc<std::sync::Mutex<Option<Arc<codex_model_provider::GatewayAuthManager>>>>,
     _gateway_notifications: Arc<tokio_util::task::AbortOnDropHandle<()>>,
     pub(super) enterprise_login: Arc<enterprise_login::EnterpriseLoginState>,
 }
@@ -291,6 +292,7 @@ impl AccountRequestProcessor {
             .await
         {
             Ok(config) => {
+                let runtime_auth = thread_manager.runtime_auth_for_config(&config);
                 Self::spawn_effective_plugins_changed_task(
                     Arc::clone(thread_manager),
                     config_manager.clone(),
@@ -312,12 +314,15 @@ impl AccountRequestProcessor {
                         &plugins_config,
                         Some(Arc::clone(&on_effective_plugins_changed)),
                     );
+                if let Err(err) = runtime_auth {
+                    warn!("failed to initialize runtime auth for remote plugin refresh: {err}");
+                    return;
+                }
                 thread_manager
                     .plugins_manager()
                     .maybe_start_remote_plugin_caches_refresh(
                         &plugins_config,
                         auth,
-                        /*prefetch_recommendations*/ true,
                         Some(on_effective_plugins_changed),
                     );
             }
@@ -1194,11 +1199,7 @@ impl AccountRequestProcessor {
             ));
         }
 
-        let client = BackendClient::from_auth(
-            self.config.chatgpt_base_url.clone(),
-            &auth,
-            http_client_factory,
-        );
+        let client = self.backend_client(&auth, http_client_factory).await?;
 
         let usage_request = async {
             if params.supports_luna_reserve
@@ -1311,11 +1312,7 @@ impl AccountRequestProcessor {
             ));
         }
 
-        let client = BackendClient::from_auth(
-            self.config.chatgpt_base_url.clone(),
-            &auth,
-            http_client_factory,
-        );
+        let client = self.backend_client(&auth, http_client_factory).await?;
         if let Some(thread_id) = thread_id {
             let thread_id = thread_id.to_string();
             let usage = tokio::time::timeout(
@@ -1399,11 +1396,7 @@ impl AccountRequestProcessor {
             ));
         }
 
-        let client = BackendClient::from_auth(
-            self.config.chatgpt_base_url.clone(),
-            &auth,
-            http_client_factory,
-        );
+        let client = self.backend_client(&auth, http_client_factory).await?;
         let messages = tokio::time::timeout(
             ACCOUNT_WORKSPACE_MESSAGES_FETCH_TIMEOUT,
             client.list_workspace_messages(),
@@ -1493,11 +1486,7 @@ impl AccountRequestProcessor {
             ));
         }
 
-        let client = BackendClient::from_auth(
-            self.config.chatgpt_base_url.clone(),
-            &auth,
-            http_client_factory,
-        );
+        let client = self.backend_client(&auth, http_client_factory).await?;
 
         match client
             .send_add_credits_nudge_email(Self::backend_credit_type(params.credit_type))

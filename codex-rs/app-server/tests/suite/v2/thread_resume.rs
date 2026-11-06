@@ -1198,11 +1198,24 @@ async fn cold_resume_workspace_roots_validate_foreign_startup_paths() -> Result<
     Ok(())
 }
 
+#[test_case(ApprovalsReviewer::AutoReview, "", ApprovalsReviewer::AutoReview; "explicit auto review")]
+#[test_case(ApprovalsReviewer::User, "", ApprovalsReviewer::User; "requirement removed")]
+#[test_case(ApprovalsReviewer::User, "allowed_approvals_reviewers = [\"auto_review\"]", ApprovalsReviewer::AutoReview; "allowlist tightened")]
 #[tokio::test]
-async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
+async fn thread_resume_preserves_persisted_approvals_reviewer(
+    requested_reviewer: ApprovalsReviewer,
+    resumed_requirements: &str,
+    expected_reviewer: ApprovalsReviewer,
+) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let codex_home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(codex_home.path())?;
+
+    let requirements_path = codex_home.path().join("requirements.toml");
+    std::fs::write(
+        &requirements_path,
+        "[auto_review]\nrequired_on_models = [\"gpt-5.4\"]\n",
+    )?;
 
     let thread_id = {
         let mut mcp = TestAppServer::builder()
@@ -1214,12 +1227,16 @@ async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
         let start_id = mcp
             .send_thread_start_request(ThreadStartParams {
                 model: Some("gpt-5.4".to_string()),
-                approvals_reviewer: Some(ApprovalsReviewer::AutoReview),
+                approvals_reviewer: Some(requested_reviewer),
                 ..Default::default()
             })
             .await?;
-        let ThreadStartResponse { thread, .. } =
-            timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+        let ThreadStartResponse {
+            thread,
+            approvals_reviewer,
+            ..
+        } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(start_id)).await??;
+        assert_eq!(approvals_reviewer, ApprovalsReviewer::AutoReview);
 
         let turn_id = mcp
             .send_turn_start_request(TurnStartParams {
@@ -1246,6 +1263,7 @@ async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
         thread.id
     };
 
+    std::fs::write(requirements_path, resumed_requirements)?;
     let config_path = codex_home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
     std::fs::write(
@@ -1271,7 +1289,7 @@ async fn thread_resume_preserves_persisted_approvals_reviewer() -> Result<()> {
         approvals_reviewer, ..
     } = timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(resume_id)).await??;
 
-    assert_eq!(approvals_reviewer, ApprovalsReviewer::AutoReview);
+    assert_eq!(approvals_reviewer, expected_reviewer);
 
     Ok(())
 }
@@ -6824,6 +6842,17 @@ async fn setup_rollout_fixture(codex_home: &Path, server_uri: &str) -> Result<Ro
     })
 }
 
+fn create_saved_gateway_rollout(home: &Path) -> Result<String> {
+    create_fake_rollout(
+        home,
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved history",
+        Some("old_provider"),
+        /*git_info*/ None,
+    )
+}
+
 #[test_case::test_case(false, false; "missing_definition_config_override")]
 #[test_case::test_case(false, true; "missing_definition_typed_override")]
 #[test_case::test_case(true, false; "policy_conflict_config_override")]
@@ -6836,14 +6865,7 @@ async fn thread_resume_returns_provider_error_even_with_provider_override(
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(home.path())?;
-    let thread_id = create_fake_rollout(
-        home.path(),
-        "2025-01-05T12-00-00",
-        "2025-01-05T12:00:00Z",
-        "Saved history",
-        Some("old_provider"),
-        /*git_info*/ None,
-    )?;
+    let thread_id = create_saved_gateway_rollout(home.path())?;
     if policy_conflict {
         let config_path = home.path().join("config.toml");
         let config = std::fs::read_to_string(&config_path)?;
@@ -6945,34 +6967,12 @@ async fn thread_resume_returns_provider_error_even_with_provider_override(
     Ok(())
 }
 
-#[test_case::test_case(false; "missing_definition")]
-#[test_case::test_case(true; "provider_mismatch")]
 #[tokio::test]
-async fn thread_resume_recovers_after_provider_configuration_is_restored(
-    configured: bool,
-) -> Result<()> {
+async fn thread_resume_recovers_after_provider_configuration_is_restored() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
     mock_responses_config(&server.uri()).write(home.path())?;
-    let thread_id = create_fake_rollout(
-        home.path(),
-        "2025-01-05T12-00-00",
-        "2025-01-05T12:00:00Z",
-        "Saved history",
-        Some("old_provider"),
-        /*git_info*/ None,
-    )?;
-    let config_path = home.path().join("config.toml");
-    if configured {
-        let config = std::fs::read_to_string(&config_path)?;
-        let server_uri = server.uri();
-        std::fs::write(
-            &config_path,
-            format!(
-                "{config}\n[model_providers.old_provider]\nname = 'Original provider'\nbase_url = '{server_uri}/v1'\n"
-            ),
-        )?;
-    }
+    let thread_id = create_saved_gateway_rollout(home.path())?;
     let mut client = TestAppServer::builder()
         .with_codex_home(home.path())
         .build_initialized()
@@ -6990,54 +6990,27 @@ async fn thread_resume_recovers_after_provider_configuration_is_restored(
             .error
             .data
             .as_ref()
-            .expect("provider error should include structured data")["type"],
-        if configured {
-            "modelProviderMismatch"
-        } else {
-            "modelProviderNotConfigured"
-        }
+            .and_then(|data| data["type"].as_str()),
+        Some("modelProviderNotConfigured")
     );
-    if configured {
-        for overrides in [
-            ThreadResumeParams {
-                model_provider: Some("mock_provider".into()),
-                ..params.clone()
-            },
-            ThreadResumeParams {
-                config: Some(std::collections::HashMap::from([(
-                    "model_provider".into(),
-                    json!("mock_provider"),
-                )])),
-                ..params.clone()
-            },
-        ] {
-            let id = client.send_thread_resume_request(overrides).await?;
-            let overridden = client
-                .read_stream_until_error_message(RequestId::Integer(id))
-                .await?;
-            assert_eq!(overridden.error, error.error);
-        }
-    }
-    let id = client
-        .send_raw_request(
-            "thread/read",
-            Some(json!({"threadId": params.thread_id, "includeTurns": true})),
-        )
-        .await?;
-    let read: codex_app_server_protocol::ThreadReadResponse = client.read_response(id).await?;
-    assert_eq!(read.thread.model_provider, "old_provider");
+
+    let config_path = home.path().join("config.toml");
     let config = std::fs::read_to_string(&config_path)?;
-    let restored = if configured {
-        config.replace(
-            "model_provider = \"mock_provider\"",
-            "model_provider = \"old_provider\"",
-        )
-    } else {
-        config.replace("mock_provider", "old_provider")
-    };
-    std::fs::write(config_path, restored)?;
-    let id = client.send_thread_resume_request(params).await?;
+    let server_uri = server.uri();
+    std::fs::write(
+        &config_path,
+        format!(
+            "{config}\n[model_providers.old_provider]\nname = 'Original provider'\nbase_url = '{server_uri}/v1'\n"
+        ),
+    )?;
+    let id = client
+        .send_thread_resume_request(ThreadResumeParams {
+            model: Some("gpt-5.2-codex".into()),
+            ..params
+        })
+        .await?;
     let resumed: ThreadResumeResponse = client.read_response(id).await?;
     assert_eq!(resumed.model_provider, "old_provider");
+    assert_eq!(resumed.model, "gpt-5.2-codex");
     Ok(())
 }

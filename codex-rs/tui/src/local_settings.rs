@@ -44,6 +44,13 @@ impl From<&Config> for LocalSettings {
 }
 
 impl LocalSettings {
+    pub(crate) fn workspace_enabled(&self, config: &Config) -> bool {
+        self.transcript_mode.is_owned()
+            && config
+                .features
+                .enabled(codex_features::Feature::TuiWorkspace)
+    }
+
     fn with_accessibility_preferences(
         config: &Config,
         system_motion: crate::motion::MotionMode,
@@ -70,6 +77,7 @@ impl LocalSettings {
                 question_esc_back: config.tui_question_esc_back,
                 raw_output_mode: config.tui_raw_output_mode,
                 fullscreen_transcript: config.tui_fullscreen_transcript,
+                sidebar_width_percent: config.tui_sidebar_width_percent,
                 mouse_scroll_speed: config.tui_mouse_scroll_speed,
                 copy_on_select: config.tui_copy_on_select,
                 copy_on_select_clear_selection: config.tui_copy_on_select_clear_selection,

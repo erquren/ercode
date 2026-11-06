@@ -218,6 +218,10 @@ impl Session {
                 published: false,
             };
             let auth = self.services.auth_manager.auth().await;
+            // Capture after claiming the refresh so a new invalidation cannot be consumed
+            // with the environment snapshot taken before its permissions changed.
+            let environments = self.services.turn_environments.snapshot().await;
+            let environment_selections = environments.all_selections();
             let desired = self.latest_mcp_desired_state(auth, environments).await;
             let selected_capability_roots = self
                 .resolve_selected_capability_roots_for_step(&desired.environments)
@@ -1183,6 +1187,15 @@ async fn review_guardian_mcp_elicitation(
         }
     };
     guardian_request.category = guardian_scope;
+    // Keep the action the server asked about, but use its owner's rules from the original call.
+    if let Ok(crate::guardian::GuardianApprovalRequest::McpToolCall {
+        prompt_permissions, ..
+    }) = &mut guardian_request.request
+        && let Some(permissions) =
+            approval_context.and_then(|context| context.environment_permissions)
+    {
+        *prompt_permissions = Some(permissions);
+    }
     let declined_reason = guardian_request.request.as_ref().err().cloned();
     let decision = crate::guardian::decide_approval(
         session,

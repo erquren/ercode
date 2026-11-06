@@ -108,6 +108,10 @@ pub struct McpRuntimeInput {
     pub client_mcp_extensions: ClientMcpExtensions,
     pub auth: Option<CodexAuth>,
     pub auth_manager: Option<Arc<AuthManager>>,
+    pub runtime_auth: Option<(
+        codex_runtime_agent_instance::RuntimeAuthSlot,
+        codex_features::RuntimeAuthMode,
+    )>,
     pub elicitation_reviewer: Option<ElicitationReviewerHandle>,
     pub elicitation_lifecycle: Option<ElicitationLifecycle>,
 }
@@ -329,7 +333,7 @@ impl McpRuntime {
         &self,
         thread_id: ThreadId,
         call_id: &str,
-        uri: &str,
+        params: ReadResourceRequestParams,
     ) -> anyhow::Result<ReadResourceResult> {
         let origin = self
             .resource_origins
@@ -341,7 +345,7 @@ impl McpRuntime {
             .await
             .ok_or_else(|| anyhow::anyhow!("codex_apps MCP server is unavailable"))?;
 
-        origin.read(&binding, thread_id, uri).await
+        origin.read(&binding, thread_id, params).await
     }
 
     pub async fn new(input: McpRuntimeInput) -> Self {
@@ -1075,6 +1079,14 @@ impl McpRuntimeContext {
 
     pub(crate) fn local_process_cwd(&self) -> PathBuf {
         self.local_process_cwd.clone()
+    }
+
+    pub(crate) fn http_client_factory(&self) -> codex_http_client::HttpClientFactory {
+        self.environment_manager.http_client_factory().clone()
+    }
+
+    pub(crate) fn set_local_http_client(&mut self, client: Arc<dyn HttpClient>) {
+        self.local_http_client = client;
     }
 
     pub(crate) fn local_http_client(&self) -> Arc<dyn HttpClient> {

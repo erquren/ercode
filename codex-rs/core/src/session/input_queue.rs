@@ -7,11 +7,11 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -20,8 +20,11 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
 
 /// Host capture metadata belonging to one input, including steers within another turn.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserInputMetadata {
+    /// Private extension data carried with this queued input through completion.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extension_data: BTreeMap<String, serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance_order: Option<u64>,
     /// Optional host-assigned UUID for this particular Responses user item.
@@ -200,38 +203,6 @@ impl InputQueue {
             None
         };
         (activity_rx, pending_activity)
-    }
-
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "active turn checks and turn state updates must remain atomic"
-    )]
-    pub(crate) async fn deliver_mailbox_communication_to_current_turn(
-        &self,
-        active_turn: &Mutex<Option<ActiveTurn>>,
-        communication: InterAgentCommunication,
-        expected_turn_id: Option<&str>,
-    ) -> bool {
-        let active = active_turn.lock().await;
-        let Some(active_turn) = active.as_ref().filter(|turn| {
-            turn.task.as_ref().is_some_and(|task| {
-                expected_turn_id.is_none_or(|id| {
-                    task.turn_context.sub_id == id && !task.cancellation_token.is_cancelled()
-                })
-            })
-        }) else {
-            return false;
-        };
-        let mut turn_state = active_turn.turn_state.lock().await;
-        if !turn_state.accepts_mailbox_delivery_for_current_turn() {
-            return false;
-        }
-        turn_state
-            .pending_input
-            .items
-            .push(TurnInput::InterAgentCommunication(communication.into()));
-        self.activity_tx.send_replace(InputQueueActivity::Mailbox);
-        true
     }
 
     pub(crate) async fn enqueue_mailbox_communication(
@@ -556,8 +527,21 @@ mod tests {
     use super::*;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
+    use codex_protocol::protocol::InterAgentCommunication;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn user_input_extension_data_round_trips_without_changing_legacy_input() {
+        let legacy = serde_json::json!({"UserInput": {"content": [], "client_id": "m"}});
+        let input: TurnInput = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(input).unwrap(), legacy);
+
+        let mut annotated = legacy;
+        annotated["UserInput"]["extension_data"] = serde_json::json!({"example": ["private"]});
+        let input: TurnInput = serde_json::from_value(annotated.clone()).unwrap();
+        assert_eq!(serde_json::to_value(input).unwrap(), annotated);
+    }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
     #[test_case::test_case("FunctionCallOutput", TurnInput::FunctionCallOutput)]

@@ -610,12 +610,12 @@ async fn legacy_terminal_preserves_image_paste_without_reading_clipboard() -> Re
             KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Char('V'), KeyModifiers::ALT | KeyModifiers::SHIFT),
         ] {
-            assert!(!app.should_recover_vim_insert_escape(key));
+            assert!(!app.should_recover_vim_insert_escape(&tui, key));
         }
-        assert!(app.should_recover_vim_insert_escape(KeyEvent::new(
-            KeyCode::Char('x'),
-            KeyModifiers::ALT,
-        )));
+        assert!(app.should_recover_vim_insert_escape(
+            &tui,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT,)
+        ));
     }
     Ok(())
 }
@@ -643,12 +643,12 @@ async fn legacy_terminal_preserves_agent_shortcuts_without_editor_word_bindings(
 
         for key in ['b', 'f'] {
             let event = KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT);
-            assert!(!app.should_recover_vim_insert_escape(event));
+            assert!(!app.should_recover_vim_insert_escape(&tui, event));
         }
         app.chat_widget.insert_str("abc");
         for key in ['b', 'f'] {
             let event = KeyEvent::new(KeyCode::Char(key), KeyModifiers::ALT);
-            assert!(app.should_recover_vim_insert_escape(event));
+            assert!(app.should_recover_vim_insert_escape(&tui, event));
         }
     }
     Ok(())
@@ -1045,6 +1045,36 @@ async fn transcript_fixed_keys_take_precedence_over_pager_chord_prefixes() -> Re
         before
     );
     assert!(!app.key_chord_matcher.is_pending());
+    super::enable_side_retention(&mut app)?;
+    let parent = ThreadId::new();
+    app.active_thread_id = Some(parent);
+    app.side_threads
+        .insert(ThreadId::new(), super::SideThreadState::new(parent));
+    app.keymap = RuntimeKeymap::for_session(
+        &toml::from_str("[pager]\nscroll_up = 'f6 u'\nscroll_down = 'f6 d'")?,
+        /*workspace*/ true,
+    )
+    .unwrap();
+    for (stroke, expected) in [
+        ('u', before),
+        (
+            'd',
+            app.transcript_view.selected_text(&app.transcript_cells),
+        ),
+    ] {
+        press(&mut app, &mut tui, &mut app_server, KeyCode::F(6).into()).await?;
+        press(
+            &mut app,
+            &mut tui,
+            &mut app_server,
+            KeyCode::Char(stroke).into(),
+        )
+        .await?;
+        assert_eq!(
+            app.transcript_view.selected_text(&app.transcript_cells),
+            expected
+        );
+    }
     tui.set_owned_screen(/*owned*/ false)?;
     app_server.shutdown().await?;
     Ok(())
@@ -1136,12 +1166,181 @@ async fn selection_after_live_commit_uses_the_refreshed_frame() -> Result<()> {
 }
 
 #[tokio::test]
+async fn pane_direction_without_neighbor_preserves_fresh_typing() -> Result<()> {
+    let (mut app, mut tui, mut app_server) = chord_app().await?;
+    super::enable_side_retention(&mut app)?;
+    tui.set_owned_screen(/*owned*/ true)?;
+
+    press(&mut app, &mut tui, &mut app_server, ctrl('x')).await?;
+    press(
+        &mut app,
+        &mut tui,
+        &mut app_server,
+        KeyCode::Char('h').into(),
+    )
+    .await?;
+    for ch in "hello".chars() {
+        press(
+            &mut app,
+            &mut tui,
+            &mut app_server,
+            KeyCode::Char(ch).into(),
+        )
+        .await?;
+    }
+    // Flush the burst of typed characters before inspecting the draft.
+    press(&mut app, &mut tui, &mut app_server, KeyCode::End.into()).await?;
+
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "hello");
+    app_server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sidebar_chooser_preserves_the_parent_draft_and_starts_a_side_chat() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let mut server = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    super::enable_side_retention(&mut app)?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    let parent = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session(test_thread_session(parent, app.config.cwd.to_path_buf()));
+    app.chat_widget.local_settings.tui.status_line = Some(vec!["model-with-reasoning".into()]);
+    app.chat_widget.insert_str("parent draft");
+
+    let size = ratatui::layout::Size::new(120, 12);
+    app.local_settings.tui.animations = true;
+    tokio::time::pause();
+    let open_chooser = [ctrl('x'), KeyCode::Char('s').into()];
+    // The second opening reverses a half-finished close.
+    for (key, widths) in [(KeyCode::Esc, [1, 20, 40]), (KeyCode::Enter, [20, 30, 40])] {
+        for stroke in open_chooser {
+            Box::pin(press(&mut app, &mut tui, &mut server, stroke)).await?;
+        }
+        for (elapsed, width) in [0, 90, 90].into_iter().zip(widths) {
+            tokio::time::advance(std::time::Duration::from_millis(elapsed)).await;
+            super::side_frame(&mut app, &mut tui, size)?;
+            assert_eq!(app.conversation_frame.chooser_area().unwrap().width, width);
+        }
+        if key == KeyCode::Esc {
+            let frame = super::side_frame(&mut app, &mut tui, size)?;
+            insta::assert_snapshot!("sidebar_new_chat", frame);
+            for stroke in [
+                ctrl('x'),
+                KeyCode::Char('c').into(),
+                KeyEvent::new_with_kind(
+                    KeyCode::Char('c'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                ),
+                KeyCode::Char('c').into(),
+                KeyCode::Char('!').into(),
+                KeyCode::Left.into(), // Flush buffered typing before the focus change.
+            ] {
+                Box::pin(press(&mut app, &mut tui, &mut server, stroke)).await?;
+            }
+            assert!(super::side_frame(&mut app, &mut tui, size)?.contains("Open in sidebar"));
+            for stroke in open_chooser {
+                Box::pin(press(&mut app, &mut tui, &mut server, stroke)).await?;
+            }
+        }
+        Box::pin(press(&mut app, &mut tui, &mut server, key.into())).await?;
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "parent draft!"
+        );
+        let dispatched = std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::StartSide { parent_thread_id, .. } if parent_thread_id == parent));
+        assert_eq!(dispatched, key == KeyCode::Enter);
+        if key == KeyCode::Esc {
+            super::side_frame(&mut app, &mut tui, size)?;
+            tokio::time::advance(std::time::Duration::from_millis(90)).await;
+            super::side_frame(&mut app, &mut tui, size)?;
+            assert_eq!(app.conversation_frame.chooser_area().unwrap().width, 20);
+        }
+    }
+    let first_prompt = crate::chatwidget::UserMessage {
+        remote_image_urls: vec!["https://example.com/image.png".into()],
+        .."first prompt".into()
+    };
+    let sibling = ThreadId::new();
+    app.sidebar_mut().chat_ready(sibling);
+    app.side_threads
+        .insert(sibling, crate::app::side::SideThreadState::new(parent));
+    let request = uuid::Uuid::new_v4();
+    app.sidebar_mut().creation = Some(crate::app::sidebar::SideCreation {
+        owner: server.backend_id(),
+        state: crate::app::sidebar::CreationState::Waiting {
+            request,
+            started: std::time::Instant::now(),
+        },
+        message: Some(first_prompt.clone()),
+    });
+    app.finish_side_creation(
+        &mut tui,
+        &mut server,
+        parent,
+        request,
+        Err("The side conversation could not be prepared.".into()),
+    )
+    .await;
+    app.sidebar_mut().show(
+        crate::app::sidebar::SidebarContent::Chooser,
+        crate::app::sidebar::PaneFocus::Main,
+    );
+    app.handle_start_side(
+        &mut tui,
+        &mut server,
+        parent,
+        Some("second prompt".into()),
+        crate::app_event::SideStartMode::New,
+    )
+    .await?;
+    let narrow = super::side_frame(&mut app, &mut tui, ratatui::layout::Size::new(30, 8))?;
+    insta::assert_snapshot!("sidebar_failed_creation", narrow);
+    Box::pin(press(&mut app, &mut tui, &mut server, KeyCode::Esc.into())).await?;
+    assert!(
+        super::side_frame(&mut app, &mut tui, ratatui::layout::Size::new(30, 8))?
+            .contains("Open in sidebar")
+    );
+    assert_eq!(
+        app.chat_widget.composer_draft_snapshot().remote_image_urls,
+        first_prompt.remote_image_urls
+    );
+    let draft = app.chat_widget.composer_text_with_pending();
+    assert!(
+        draft.contains("first prompt") && draft.contains("second prompt"),
+        "{draft}"
+    );
+    tokio::time::resume();
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn key_capture_receives_voice_shortcut_and_chord_prefix() -> Result<()> {
     let (mut app, mut rx, _op_rx) = super::make_test_app_with_channels().await;
     let mut app_server = start_config_write_test_app_server(&app).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    for config in ["", "[chat]\ntoggle_voice = 'f8 v'"] {
-        app.keymap = RuntimeKeymap::from_config(&toml::from_str(config)?).unwrap();
+    super::enable_side_retention(&mut app)?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    let parent = ThreadId::new();
+    app.active_thread_id = Some(parent);
+    let child = ThreadId::new();
+    app.side_threads
+        .insert(child, super::SideThreadState::new(parent));
+    for (config, key) in [
+        ("", 8),
+        ("[chat]\ntoggle_voice = 'f8 v'", 8),
+        ("[global]\nhide_pane = 'f12'", 12),
+        ("[global]\nfocus_main_composer = 'f12'", 12),
+        ("[global]\nfocus_sidebar_content = 'f12 s'", 12),
+        ("[global]\nfocus_pane_left = 'f12 h'", 12),
+        ("[global]\nfocus_pane_right = 'f12 l'", 12),
+    ] {
+        app.keymap =
+            RuntimeKeymap::for_session(&toml::from_str(config)?, /*workspace*/ true).unwrap();
         app.chat_widget.open_keymap_capture(
             "composer".into(),
             "submit".into(),
@@ -1149,10 +1348,67 @@ async fn key_capture_receives_voice_shortcut_and_chord_prefix() -> Result<()> {
             crate::app_event::KeymapCaptureMode::SingleKey,
             &app.keymap,
         );
-        press(&mut app, &mut tui, &mut app_server, KeyCode::F(8).into()).await?;
+        press(&mut app, &mut tui, &mut app_server, KeyCode::F(key).into()).await?;
         assert!(
-            matches!(rx.try_recv()?, crate::app_event::AppEvent::KeymapCaptured { key, .. } if key == "f8")
+            matches!(rx.try_recv()?, crate::app_event::AppEvent::KeymapCaptured { key: captured, .. } if captured == format!("f{key}"))
         );
     }
+    // A printable remap belongs to the composer unless this session and thread own a pane.
+    app.keymap = RuntimeKeymap::for_session(
+        &toml::from_str("[global]\nhide_pane = '%'")?,
+        /*workspace*/ true,
+    )
+    .unwrap();
+    for (thread, enabled, owned, offline, draft) in [
+        (parent, true, true, false, ""),
+        (ThreadId::new(), true, true, false, "%"),
+        (parent, false, true, false, "%"),
+        (parent, true, false, false, "%"),
+        (parent, true, true, true, "%"),
+    ] {
+        app.active_thread_id = Some(thread);
+        app.config
+            .features
+            .set_enabled(codex_features::Feature::TuiWorkspace, enabled)?;
+        tui.set_owned_screen(owned)?;
+        app.reconnect.offline = offline;
+        app.chat_widget.apply_external_edit(String::new());
+        for key in [KeyCode::Char('%'), KeyCode::Right] {
+            press(&mut app, &mut tui, &mut app_server, key.into()).await?;
+        }
+        assert_eq!(app.chat_widget.composer_text_with_pending(), draft);
+    }
+
+    // Offline, the same printable binding focuses the local composer but cannot switch threads.
+    let mut stopped = app_server.request_view();
+    app_server.shutdown().await?;
+    app.local_settings.tui.keymap = toml::from_str("[global]\nfocus_main_composer = '%'")?;
+    super::enable_side_retention(&mut app)?;
+    app.active_thread_id = Some(ThreadId::new());
+    app.reconnect.offline = true;
+    app.chat_widget.apply_external_edit("draft".into());
+    app.transcript_view.begin_search();
+    for key in [KeyCode::Char('%'), KeyCode::Char('!'), KeyCode::Right] {
+        press(&mut app, &mut tui, &mut stopped, key.into()).await?;
+    }
+    assert!(!app.transcript_view.has_active_interaction());
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "draft!");
+    app.active_thread_id = Some(child);
+    for key in [KeyCode::Char('%'), KeyCode::Right] {
+        press(&mut app, &mut tui, &mut stopped, key.into()).await?;
+    }
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "draft!%");
+    // Bare letters and arrows still edit the draft.
+    for key in [
+        KeyCode::Char('h'),
+        KeyCode::Left,
+        KeyCode::Char('l'),
+        KeyCode::Right,
+        KeyCode::Char('!'),
+        KeyCode::Right,
+    ] {
+        press(&mut app, &mut tui, &mut stopped, key.into()).await?;
+    }
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "draft!%lh!");
     Ok(())
 }

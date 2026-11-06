@@ -3,6 +3,8 @@
 //! This module owns the typed JSON-RPC calls needed by the TUI and keeps
 //! request/response plumbing out of `App` and `ChatWidget`.
 
+mod account;
+pub(crate) use account::SessionAccount;
 mod daybreak_api_key_compat;
 mod events;
 mod external_agent_config;
@@ -81,8 +83,11 @@ use codex_app_server_protocol::ThreadApproveGuardianDeniedActionParams;
 use codex_app_server_protocol::ThreadApproveGuardianDeniedActionResponse;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminal;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListParams;
+use codex_app_server_protocol::ThreadBackgroundTerminalsListResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadDeleteParams;
@@ -156,6 +161,9 @@ use codex_utils_path_uri::PathUri;
 use color_eyre::eyre::ContextCompat;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
+use futures::FutureExt;
+use futures::future::Either;
+use futures::future::RemoteHandle;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -354,6 +362,7 @@ pub(crate) struct AppServerSession {
     pub(crate) thread_settings_update_supported: bool,
     default_model: Option<String>,
     available_models: Vec<ModelPreset>,
+    prefetched_model_list: Option<RemoteHandle<Result<ModelListResponse>>>,
     daybreak_api_key_compat: Arc<tokio::sync::Semaphore>,
     managed_new_thread_defaults: Option<NewThreadModelDefaults>,
     external_agent_config_import_id: Mutex<Option<String>>,
@@ -435,6 +444,14 @@ impl ThreadParamsMode {
             Self::Remote | Self::Cloud => None,
         }
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct SidebarFork {
+    pub(crate) thread: AppServerStartedThread,
+    pub(crate) boundary: Result<(), String>,
+    pub(crate) inherited_profile: bool,
+    legacy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -560,6 +577,7 @@ impl AppServerSession {
             thread_settings_update_supported: true,
             default_model: None,
             available_models: Vec::new(),
+            prefetched_model_list: None,
             daybreak_api_key_compat: Arc::new(tokio::sync::Semaphore::new(/*permits*/ 1)),
             managed_new_thread_defaults: None,
             external_agent_config_import_id: Mutex::default(),
@@ -785,6 +803,33 @@ impl AppServerSession {
         client.codex_home()
     }
 
+    pub(crate) fn prefetch_model_list(&mut self) {
+        let (request, models) = self.request_model_list().remote_handle();
+        tokio::spawn(request);
+        self.prefetched_model_list = Some(models);
+    }
+
+    fn request_model_list(&mut self) -> impl Future<Output = Result<ModelListResponse>> + use<> {
+        let handle = self.request_handle();
+        let request_id = self.next_request_id();
+        async move {
+            handle
+                .request_typed(ClientRequest::ModelList {
+                    request_id,
+                    params: ModelListParams {
+                        cursor: None,
+                        limit: None,
+                        include_hidden: Some(true),
+                        model_provider: None,
+                    },
+                })
+                .await
+                .map_err(|err| {
+                    bootstrap_request_error("model/list failed during TUI bootstrap", err)
+                })
+        }
+    }
+
     pub(crate) async fn bootstrap(&mut self, config: &Config) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
         let account = self.read_account().await?;
@@ -825,26 +870,13 @@ impl AppServerSession {
         fallback: EmptyCatalogFallback,
     ) -> Result<AppServerBootstrap> {
         let started_at = Instant::now();
-        // `hooks/list` holds the global config queue during startup. Submit models and config
-        // requirements together so an uncached model fetch can overlap both config requests.
-        let model_request_id = self.next_request_id();
+        let models = match self.prefetched_model_list.take() {
+            Some(models) => Either::Left(models),
+            None => Either::Right(self.request_model_list()),
+        };
         let requirements_request_id = self.next_request_id();
         let (models, requirements, collaboration_modes) = tokio::try_join!(
-            async {
-                self.request_handle
-                    .request_typed::<ModelListResponse>(ClientRequest::ModelList {
-                        request_id: model_request_id,
-                        params: ModelListParams {
-                            cursor: None,
-                            limit: None,
-                            include_hidden: Some(true),
-                        },
-                    })
-                    .await
-                    .map_err(|err| {
-                        bootstrap_request_error("model/list failed during TUI bootstrap", err)
-                    })
-            },
+            models,
             async {
                 match self
                     .request_handle
@@ -927,63 +959,17 @@ impl AppServerSession {
         self.default_model = Some(default_model.clone());
         self.available_models = available_models.clone();
 
-        let (
-            account_email,
-            auth_mode,
-            status_account_display,
-            plan_type,
-            feedback_audience,
-            has_chatgpt_account,
-        ) = match account.account {
-            Some(Account::ApiKey {}) => (
-                None,
-                Some(TelemetryAuthMode::ApiKey),
-                Some(StatusAccountDisplay::ApiKey),
-                None,
-                FeedbackAudience::External,
-                false,
-            ),
-            Some(Account::Chatgpt {
-                email,
-                plan_type,
-                workspace_name,
-            }) => {
-                let feedback_audience = if email
-                    .as_deref()
-                    .is_some_and(|email| email.ends_with("@openai.com"))
-                {
-                    FeedbackAudience::OpenAiEmployee
-                } else {
-                    FeedbackAudience::External
-                };
-                (
-                    email.clone(),
-                    Some(TelemetryAuthMode::Chatgpt),
-                    Some(StatusAccountDisplay::ChatGpt {
-                        email,
-                        plan: Some(plan_type_display_name(plan_type)),
-                        workspace: workspace_display(workspace_name, account.workspace_routing),
-                    }),
-                    Some(plan_type),
-                    feedback_audience,
-                    true,
-                )
-            }
-            Some(Account::AmazonBedrock { .. } | Account::Gcp {}) => {
-                (None, None, None, None, FeedbackAudience::External, false)
-            }
-            None => (None, None, None, None, FeedbackAudience::External, false),
-        };
+        let account = SessionAccount::from(account);
         Ok(AppServerBootstrap {
             duration: started_at.elapsed(),
-            account_email,
-            auth_mode,
-            status_account_display,
-            plan_type,
+            account_email: account.email().map(str::to_owned),
+            auth_mode: account.auth_mode(),
+            feedback_audience: account.feedback_audience(),
+            has_chatgpt_account: account.has_chatgpt_account(),
+            status_account_display: account.display,
+            plan_type: account.plan,
             requires_openai_auth: account.requires_openai_auth,
             default_model,
-            feedback_audience,
-            has_chatgpt_account,
             available_models,
             collaboration_modes,
             allowed_approval_policies,
@@ -1012,7 +998,7 @@ impl AppServerSession {
                 },
             })
             .await
-            .map_err(|err| bootstrap_request_error("account/read failed during TUI bootstrap", err))
+            .map_err(|err| bootstrap_request_error("account/read failed", err))
     }
 
     pub(crate) async fn next_event(&mut self) -> Option<AppServerSessionEvent> {
@@ -1189,6 +1175,75 @@ impl AppServerSession {
         .await
     }
 
+    pub(crate) async fn fork_thread_for_directory_change(
+        &mut self,
+        local_settings: &LocalSettings,
+        config: Config,
+        thread_id: ThreadId,
+        selected_profile: Option<&PermissionProfileSelection>,
+    ) -> Result<AppServerStartedThread> {
+        let permission_mode = match self.thread_params_mode() {
+            ThreadParamsMode::Embedded => ForkPermissionMode::OverrideFromCurrentConfig,
+            ThreadParamsMode::Remote | ThreadParamsMode::Cloud => ForkPermissionMode::InheritSaved,
+        };
+        self.fork_thread_at_with_presentation(
+            local_settings,
+            config,
+            thread_id,
+            /*last_turn_id*/ None,
+            /*before_turn_id*/ None,
+            ForkGoalContinuation::DeferUntilNextTurn,
+            ForkPresentation::Regular,
+            selected_profile,
+            permission_mode,
+            ForkConfigSource::Session,
+        )
+        .await
+    }
+
+    /// Fork and inject the side boundary on a request-only view. The live session
+    /// keeps receiving notifications and drawing frames while these RPCs run.
+    pub(crate) fn sidebar_fork(
+        &self,
+        settings: LocalSettings,
+        config: Config,
+        parent: ThreadId,
+        profile: Option<PermissionProfileSelection>,
+        boundary: ResponseItem,
+    ) -> impl Future<Output = Result<SidebarFork>> + Send + use<> {
+        let mut view = self
+            .request_view()
+            .with_thread_tool_transport(self.thread_tool_transport());
+        if self.task_tools_available(parent) {
+            view.remember_task_tool_thread(parent);
+        }
+        async move {
+            let thread = view
+                .fork_side_thread(&settings, config, parent, profile.as_ref())
+                .await?;
+            let boundary = view
+                .thread_inject_items(thread.session.thread_id, vec![boundary])
+                .await
+                .map(|_| ())
+                .map_err(|err| err.to_string());
+            Ok(SidebarFork {
+                thread,
+                boundary,
+                inherited_profile: profile.is_some(),
+                legacy: view.history_support == ThreadHistorySupport::LegacyOnly,
+            })
+        }
+    }
+
+    pub(crate) fn observe_sidebar_fork(&mut self, fork: &SidebarFork) {
+        if fork.legacy {
+            self.history_support = ThreadHistorySupport::LegacyOnly;
+        }
+        if fork.thread.task_tools_available {
+            self.remember_task_tool_thread(fork.thread.session.thread_id);
+        }
+    }
+
     pub(crate) async fn fork_side_thread(
         &mut self,
         local_settings: &LocalSettings,
@@ -1274,6 +1329,12 @@ impl AppServerSession {
             // Active-session config has already adopted the server's roots. Fork does
             // not restore saved roots when omitted, so preserve this explicit selection.
             params.runtime_workspace_roots = Some(config.workspace_roots.clone());
+            if permission_mode == ForkPermissionMode::InheritSaved && selected_profile.is_none() {
+                params.approvals_reviewer = None;
+                if let Some(overrides) = params.config.as_mut() {
+                    overrides.remove("approvals_reviewer");
+                }
+            }
         }
         if self.thread_params_mode() == ThreadParamsMode::Remote
             && permission_mode == ForkPermissionMode::InheritSaved
@@ -1943,6 +2004,33 @@ impl AppServerSession {
             .await
             .wrap_err("thread/approveGuardianDeniedAction failed in TUI")?;
         Ok(())
+    }
+
+    pub(crate) async fn list_background_terminals(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<Vec<ThreadBackgroundTerminal>> {
+        let mut terminals = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request_id = self.next_request_id();
+            let page: ThreadBackgroundTerminalsListResponse = self
+                .request_handle
+                .request_typed(ClientRequest::ThreadBackgroundTerminalsList {
+                    request_id,
+                    params: ThreadBackgroundTerminalsListParams {
+                        thread_id: thread_id.to_string(),
+                        cursor,
+                        limit: None,
+                    },
+                })
+                .await?;
+            terminals.extend(page.data);
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                return Ok(terminals);
+            }
+        }
     }
 
     pub(crate) async fn thread_background_terminals_clean(

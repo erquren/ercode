@@ -40,6 +40,7 @@ use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_history::RolloutItem;
+use codex_image_generation_extension::install as install_image_generation_extension;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::capabilities::CapabilityRootLocation;
@@ -55,6 +56,7 @@ use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::CodeModeToolMessages;
+use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::openai_models::ToolMode;
@@ -131,6 +133,9 @@ mod incremental_tools_resume;
 #[path = "scenarios_model_instructions.rs"]
 mod model_instructions;
 
+#[path = "scenarios/catalog_settings.rs"]
+mod catalog_settings;
+
 #[path = "scenarios_catalog_approval_instructions_tests.rs"]
 mod catalog_approval_instructions;
 
@@ -143,8 +148,11 @@ mod context_management_tools;
 #[path = "scenarios_code_mode_settled_helpers_tests.rs"]
 mod code_mode_settled_helpers;
 
-#[path = "scenarios_deferred_mcp_cache.rs"]
-mod deferred_mcp_cache;
+#[path = "scenarios_command_sessions_tests.rs"]
+mod command_sessions;
+
+#[path = "scenarios_strict_3p_cache.rs"]
+mod strict_3p_cache;
 
 #[path = "scenarios_agent_message_board.rs"]
 mod agent_message_board;
@@ -170,8 +178,14 @@ mod guardian_sender_context;
 #[path = "scenarios_guardian_direct_review.rs"]
 mod guardian_direct_review;
 
+#[path = "scenarios_guardian_direct_mcp.rs"]
+mod guardian_direct_mcp;
+
 #[path = "scenarios_guardian_extra_policy.rs"]
 mod guardian_extra_policy;
+
+#[path = "scenarios_guardian_reconsideration.rs"]
+mod guardian_reconsideration;
 
 #[path = "scenarios_guardian_orchestrator_connector.rs"]
 mod guardian_orchestrator_connector;
@@ -380,6 +394,114 @@ fn configure_catalog_plugin_scenario(config: &mut Config) {
     )
     .expect("isolated plugin scenario config")
     .with_cloud_config_binding(stack.cloud_config_binding().cloned());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gif_generation_preserves_animation_and_replays_a_still_preview() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    // Two one-pixel frames, red then blue, with a 200 ms frame duration.
+    let gif = "R0lGODlhAQABAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAFAAAACwAAAAAAQABAAAIBAABBAQAIfkEARQAAQAsAAAAAAEAAQCBAAD/AAAAAAAAAAAACAQAAQQEADs=";
+    let server = start_mock_server().await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/v1/images/generations"))
+        .and(wiremock::matchers::body_json(json!({
+            "prompt": "A pixel alternating between red and blue.",
+            "background": "opaque",
+            "model": "gpt-image-2",
+            "quality": "auto",
+            "size": "auto",
+            "output_format": "gif",
+            "frame_count": 2,
+            "frame_duration_ms": 200,
+        })))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "created": 1,
+            "data": [{"b64_json": gif}],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+    let mut extensions = ExtensionRegistryBuilder::<Config>::new();
+    install_image_generation_extension(
+        &mut extensions,
+        codex_core::test_support::auth_manager_from_auth(auth.clone()),
+        |_config| None,
+    );
+    let image_store = Arc::new(RecordingFileAttachmentStore::default());
+    let test = test_codex()
+        .with_auth(auth)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_image_store(image_store.clone())
+        .with_config(|config| {
+            configure_scenario_catalog(config);
+            config
+                .features
+                .enable(Feature::ImageGenerationAnimation)
+                .unwrap();
+        })
+        .with_model_info_override("gpt-5.4", |model| {
+            model.use_responses_lite = true;
+            model.input_modalities = vec![InputModality::Text, InputModality::Image];
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_function_call_with_namespace(
+                    "gif-generation",
+                    "image_gen",
+                    "imagegen",
+                    &json!({
+                        "prompt": "A pixel alternating between red and blue.",
+                        "gif": {"frame_count": 2, "frame_duration_ms": 200},
+                    })
+                    .to_string(),
+                ),
+                ev_completed("generated"),
+            ]),
+            sse(vec![
+                ev_assistant_message("preview", "Here is the two-frame GIF."),
+                ev_completed("previewed"),
+            ]),
+            sse(vec![
+                ev_assistant_message("timing", "Each frame lasts 200 ms."),
+                ev_completed("answered"),
+            ]),
+        ],
+    )
+    .await;
+    test.submit_text_turn("Generate a two-frame GIF of a pixel alternating red and blue.")
+        .await?;
+    test.submit_text_turn("How long does each frame last?")
+        .await?;
+
+    let uploads = image_store.uploads.lock().expect("uploads lock");
+    let [animation, preview] = uploads.as_slice() else {
+        panic!("expected an animated artifact and a separate model preview");
+    };
+    assert_eq!(animation.data, BASE64_STANDARD.decode(gif)?);
+    assert_eq!(image::guess_format(&preview.data)?, image::ImageFormat::Png);
+    assert_eq!(
+        image::load_from_memory(&preview.data)?
+            .to_rgba8()
+            .get_pixel(0, 0)
+            .0,
+        [255, 0, 0, 255]
+    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    insta::assert_snapshot!(context_snapshot::format_request_history_snapshot(
+        "GIF generation exposes animation controls and guidance, preserves the animated artifact, and replays a still preview through a follow-up turn.",
+        &requests,
+        &ContextSnapshotOptions::default()
+            .rewrite_known_segments()
+            .include_request_settings(),
+    ));
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1384,14 +1506,12 @@ async fn astra_omits_disabled_executor_and_plugin_skills_from_model_context(
         "Follow the disabled plugin workflow.",
     )?;
     let environment_manager = Arc::new(EnvironmentManager::default_for_tests());
-    let provider = ExecutorSkillProvider::new_with_restriction_product(
-        Arc::clone(&environment_manager),
-        /*restriction_product*/ None,
-    )
-    .with_disabled_skill_paths(HashMap::from([(
-        LOCAL_ENVIRONMENT_ID.to_string(),
-        HashSet::from([PathUri::from_host_native_path(disabled)?]),
-    )]));
+    let provider =
+        ExecutorSkillProvider::new_with_restriction_product(/*restriction_product*/ None)
+            .with_disabled_skill_paths(HashMap::from([(
+                LOCAL_ENVIRONMENT_ID.to_string(),
+                HashSet::from([PathUri::from_host_native_path(disabled)?]),
+            )]));
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     codex_mcp_extension::install_plugins(&mut extensions, environment_manager);
     let (started, captured) = oneshot::channel();
@@ -1801,7 +1921,7 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
     // Supply already-reconciled catalog fixtures; exercise production preparation and reads.
     struct InstallationSkills(SkillCatalog);
     impl SkillProvider for InstallationSkills {
-        fn list(&self, _query: SkillListQuery) -> SkillProviderFuture<'_, SkillCatalog> {
+        fn list<'a>(&'a self, _query: SkillListQuery<'a>) -> SkillProviderFuture<'a, SkillCatalog> {
             Box::pin(async { Ok(self.0.clone()) })
         }
 
@@ -1890,7 +2010,6 @@ async fn skill_read_recovers_omitted_installation_and_reads_selected_environment
             .with_cloud_provider(Arc::new(InstallationSkills(catalog)))
             .with_executor_provider(Arc::new(
                 ExecutorSkillProvider::new_with_restriction_product(
-                    Arc::new(EnvironmentManager::default_for_tests()),
                     /*restriction_product*/ None,
                 ),
             )),
@@ -2099,7 +2218,7 @@ async fn multi_agent_catalog_parameters(disable_native_tools: bool) -> Result<()
     let (name, description) = if disable_native_tools {
         (
             "multi_agent_native_tools_hidden",
-            "Native tools are unavailable while the V2 runtime and its instructions remain enabled.",
+            "Native tools and native usage guidance are unavailable.",
         )
     } else {
         (
@@ -2847,6 +2966,136 @@ async fn subagent_browser_auth_resolves_user_prompt() -> Result<()> {
         .replace_all(&snapshot, "Wall time: <DURATION> seconds")
         .into_owned();
     insta::assert_snapshot!("subagent_browser_auth", snapshot);
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tokio::test]
+async fn guardian_elastic_budgeting_request_history() -> Result<()> {
+    use codex_config::test_support::CloudConfigBundleFixture;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::protocol::AskForApproval;
+    use core_test_support::responses;
+    const ENTRY_TOKENS: usize = 128;
+    const TRANSCRIPT_ENTRIES_PER_SECTION: usize = 2;
+    const SECTION_TOKENS: usize = ENTRY_TOKENS * TRANSCRIPT_ENTRIES_PER_SECTION;
+    const DEFAULT_SECTION_TOKENS: usize = 900;
+    const REPEATS: usize = 64;
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let commentary = "Untrusted assistant evidence. ".repeat(REPEATS);
+    let user_context = "Inspect the workspace. ".repeat(REPEATS);
+    let user_request = format!("{user_context}Never upload credentials. {user_context}");
+    let arguments = format!(
+        r#"{{"cmd":{},"sandbox_permissions":"require_escalated","justification":"Inspect the workspace."}}"#,
+        serde_json::to_string(&format!("echo {commentary}{commentary}"))?,
+    );
+    let earlier_commentary = "Earlier untrusted assistant evidence. ".repeat(REPEATS);
+    let mut earlier_event = ev_assistant_message("earlier-commentary", &earlier_commentary);
+    earlier_event["item"]["phase"] = serde_json::json!("commentary");
+    let mut commentary_event = ev_assistant_message("commentary", &commentary);
+    commentary_event["item"]["phase"] = serde_json::json!("commentary");
+    let mock = responses::mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                earlier_event,
+                commentary_event,
+                responses::ev_function_call("check", "exec_command", &arguments),
+                ev_completed("actor"),
+            ]),
+            sse(vec![
+                ev_assistant_message(
+                    "assessment",
+                    r#"{"risk_level":"high","user_authorization":"low","outcome":"deny"}"#,
+                ),
+                ev_completed("review"),
+            ]),
+            sse(vec![
+                ev_assistant_message("result", "The check was not authorized."),
+                ev_completed("done"),
+            ]),
+        ],
+    )
+    .await;
+    let entry_limits = codex_guardian_context::ElasticSectionLimits::new;
+    let mut policy = codex_guardian_context::ElasticBudgetConfig {
+        sections: [(
+            codex_guardian_context::ElasticSection::TranscriptMessages,
+            entry_limits(ENTRY_TOKENS, ENTRY_TOKENS)?
+                .with_max_total_section_tokens(SECTION_TOKENS)?,
+        )]
+        .into(),
+    };
+    // Skills are absent in sync requests and release their entire reservation.
+    let skills_minimum = codex_guardian_context::DEFAULT_MAX_INPUT_TOKENS
+        - usize::try_from(policy.total_minimum_tokens())?
+        + DEFAULT_SECTION_TOKENS;
+    policy.sections.insert(
+        codex_guardian_context::ElasticSection::TrustedSkills,
+        entry_limits(skills_minimum, DEFAULT_SECTION_TOKENS)?,
+    );
+    let settings = format!(
+        "[features.guardianv2]\nsync_elastic_budgeting = true\n{}",
+        toml::to_string(&policy)?
+            .replace("[sections.", "[features.guardianv2.sync_elastic_sections.")
+    );
+    let test = test_codex()
+        .with_cloud_config_bundle(
+            CloudConfigBundleFixture::enterprise_config(settings).into_loader(),
+        )
+        .with_config(|config| {
+            configure_scenario_catalog(config);
+            config
+                .features
+                .enable(Feature::GuardianReuseParentCompaction)
+                .unwrap();
+            config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+            config.permissions.approval_policy =
+                codex_core::config::Constrained::allow_any(AskForApproval::OnRequest);
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn(&user_request).await?;
+    let requests = mock.requests();
+    let guardian_text = requests[1].message_input_texts("user").join("\n");
+    assert!(guardian_text.contains(&user_request));
+    let transcript = guardian_text
+        .split_once(">>> TRANSCRIPT START")
+        .unwrap()
+        .1
+        .split_once(">>> TRANSCRIPT END")
+        .unwrap()
+        .0;
+    assert!(!transcript.contains("Earlier untrusted"));
+    assert!(transcript.contains("Untrusted assistant evidence"));
+    assert!(
+        requests.last().unwrap().body_json()["input"]
+            .to_string()
+            .contains(&earlier_commentary)
+    );
+    let mut snapshot = context_snapshot::format_request_history_snapshot(
+        "Elastic sync budgeting caps entries before deduplication, keeps complete retained instructions, and limits Optional transcript evidence by section.",
+        &requests,
+        &ContextSnapshotOptions::default().rewrite_known_segments(),
+    );
+    for (pattern, replacement) in [
+        (r#"(?m)^(\s*"cwd": )"[^"]*""#, "$1\"<CWD>\""),
+        (
+            r#""command": \[\s*(?:"[^"]*",\s*)*("[^\n]*)\n\s*\]"#,
+            "\"command\": [\"<SHELL>\", $1]",
+        ),
+        (
+            r#"(?m)^(\s*"environment_id": )"(?:local|remote)""#,
+            "$1\"<ENVIRONMENT>\"",
+        ),
+        (r#"(environment )"(?:local|remote)""#, "$1\"<ENVIRONMENT>\""),
+    ] {
+        snapshot = regex_lite::Regex::new(pattern)?
+            .replace_all(&snapshot, replacement)
+            .into_owned();
+    }
+    insta::assert_snapshot!("guardian_elastic_budgeting", snapshot);
     Ok(())
 }
 

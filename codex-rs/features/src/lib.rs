@@ -24,6 +24,7 @@ pub use feature_configs::ContextManagementConfigToml;
 pub use feature_configs::CurrentTimeReminderConfigToml;
 pub use feature_configs::CurrentTimeReminderDeliveryMode;
 pub use feature_configs::CurrentTimeSource;
+pub use feature_configs::GuardianElasticSectionConfigToml;
 pub use feature_configs::GuardianV2ConfigToml;
 pub use feature_configs::GuardianV2ReviewScopeConfigToml;
 pub use feature_configs::GuardianV2TranscriptConfigToml;
@@ -121,7 +122,7 @@ pub enum Feature {
     /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
     SecretAuthStorage,
 
-    /// Removed compatibility flag. Eligible interactive launches always start or reuse the daemon.
+    /// Automatically start the shared local daemon for eligible interactive launches.
     DaemonAutoStart,
     /// Allow the TUI to discover and select among multiple conversation backends.
     TuiMultiBackend,
@@ -164,7 +165,8 @@ pub enum Feature {
     CodeModeToolDescriptionFirst,
     /// Restrict model-visible tools to code mode entrypoints (`exec`, `wait`).
     CodeModeOnly,
-    /// Removed compatibility flag for strict third-party tool deferral in Code Mode Only.
+    /// Keep eligible MCP/app and dynamic tools deferred in exec, only in Code Mode Only.
+    /// Ignores deferLoading, omit_tools_from, and namespace skip settings.
     CodeModeOnlyStrictThirdPartyTools,
     /// Use the single unified PTY-backed exec tool.
     UnifiedExec,
@@ -300,6 +302,8 @@ pub enum Feature {
     ToolSearchAlwaysDeferMcpTools,
     /// Describe deferred tool namespaces in the model-visible world state.
     DeferredToolWorldState,
+    /// Publish retained command sessions through incremental world state.
+    CommandSessionsWorldState,
     /// Track top-level tool definitions in world state and emit incremental context updates.
     IncrementalTools,
     /// Suppress the model ID announcement in incremental context after a model switch.
@@ -374,8 +378,7 @@ pub enum Feature {
     ComputerUse,
     /// Enable the PS-backed remote plugin catalog.
     RemotePlugin,
-    /// Prefetch the plugin directory, featured plugins, and recommendations at app-server startup.
-    /// Inventory-only hosts can disable this. Legacy suggestions read the cached directory.
+    /// Removed compatibility flag for plugin discovery prefetch.
     PluginDiscoveryPrefetch,
     /// Enable remote plugin sharing flows.
     PluginSharing,
@@ -383,6 +386,8 @@ pub enum Feature {
     ExternalMigration,
     /// Enable extension-backed image generation.
     ImageGeneration,
+    /// Allow the image-generation tool to request a backend-assembled GIF.
+    ImageGenerationAnimation,
     /// Omit inline image and audio content from app-server item notifications.
     OmitAppServerNotificationMedia,
     /// Tell the model when a prompt image was resized and include its dimensions.
@@ -417,6 +422,8 @@ pub enum Feature {
     SendMessageToUserAsync,
     /// Enable automatic review for approval prompts.
     GuardianApproval,
+    /// Include standalone additional-context tool outputs in Guardian review history.
+    GuardianIncludeAdditionalContext,
     /// Forward private reviewer items and interruptions to raw-event observers.
     GuardianRecordedItems,
     /// Removed compatibility flag for always-on thread-owned Guardian context.
@@ -436,6 +443,8 @@ pub enum Feature {
     GuardianTrustOrchestratorConnectors,
     /// Give Guardian access to the root conversation's message history tools.
     GuardianConversationHistoryTools,
+    /// Resample a synchronous Guardian denial once before publishing it.
+    GuardianDenialReconsideration,
     /// Enable Guardian V2 automatic approval reviews.
     GuardianV2,
     /// Run Decisions alongside Guardian V2 for measurement without changing approvals.
@@ -484,6 +493,8 @@ pub enum Feature {
     RemoteCompactionV2,
     /// Prepare remote compaction in the background before the foreground limit is reached.
     AsyncCompaction,
+    /// Restrict background compaction to the root session.
+    AsyncCompactionRootOnly,
     /// Include retained images in the remote compaction context budget.
     CompactionImageBudget,
     /// Retain client-authored developer messages across compacted context windows.
@@ -631,6 +642,11 @@ impl Features {
         self.enabled.contains(&f)
     }
 
+    /// Whether to advertise GIF output in the image-generation tool.
+    pub fn image_generation_animation_enabled(&self) -> bool {
+        self.enabled(Feature::ImageGenerationAnimation)
+    }
+
     /// Whether a routing tier is enabled, independently of model catalog support.
     pub fn service_tier_enabled(&self, service_tier: &str) -> bool {
         match service_tier {
@@ -725,13 +741,6 @@ impl Features {
                     );
                     continue;
                 }
-                "daemon_auto_start" => {
-                    self.record_legacy_usage_force(
-                        "features.daemon_auto_start",
-                        Feature::DaemonAutoStart,
-                    );
-                    continue;
-                }
                 "transcript_v2" => {
                     self.record_legacy_usage_force("features.transcript_v2", Feature::TranscriptV2);
                     continue;
@@ -760,7 +769,7 @@ impl Features {
                 "image_detail_original" | "resize_all_images" | "item_ids" => {
                     continue;
                 }
-                "personality" | "plugin_hooks" => {
+                "personality" | "plugin_discovery_prefetch" | "plugin_hooks" => {
                     continue;
                 }
                 "skill_env_var_dependency_prompt" => {
@@ -854,10 +863,6 @@ fn legacy_usage_notice(alias: &str, feature: Feature) -> (String, Option<String>
         Feature::GuardianThreadContext => (
             "`[features.guardianv2].thread_context` is deprecated and ignored.".to_string(),
             Some("Thread-owned Guardian context is always enabled. Remove `thread_context` from [features.guardianv2] in config.toml, including profile overrides.".to_string()),
-        ),
-        Feature::DaemonAutoStart => (
-            "`[features].daemon_auto_start` is deprecated and ignored.".to_string(),
-            Some("Remove `daemon_auto_start` from [features] in config.toml or profile configuration files. Use `--no-daemon` to run without the shared background server.".to_string()),
         ),
         Feature::TranscriptV2 => (
             "`[features].transcript_v2` is deprecated and ignored.".to_string(),
@@ -1123,7 +1128,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::DaemonAutoStart,
         key: "daemon_auto_start",
-        stage: Stage::Removed,
+        stage: Stage::Stable,
         default_enabled: true,
     },
     FeatureSpec {
@@ -1362,7 +1367,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CodeModeOnlyStrictThirdPartyTools,
         key: "code_mode_only_strict_3p_tools",
-        stage: Stage::Removed,
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {
@@ -1628,7 +1633,7 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Collab,
         key: "multi_agent",
-        stage: Stage::Stable,
+        stage: Stage::Deprecated,
         default_enabled: true,
     },
     FeatureSpec {
@@ -1780,6 +1785,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "deferred_tool_world_state",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::CommandSessionsWorldState,
+        key: "command_sessions_world_state",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::IncrementalTools,
@@ -1940,8 +1951,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::PluginDiscoveryPrefetch,
         key: "plugin_discovery_prefetch",
-        stage: Stage::Stable,
-        default_enabled: true,
+        stage: Stage::Removed,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::PluginSharing,
@@ -1962,6 +1973,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::ImageGenerationAnimation,
+        key: "image_generation_animation",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
         id: Feature::OmitAppServerNotificationMedia,
         key: "omit_app_server_notification_media",
         stage: Stage::UnderDevelopment,
@@ -1976,8 +1993,8 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::UnifiedImageBudget,
         key: "unified_image_budget",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ResizeAllImages,
@@ -2076,6 +2093,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         default_enabled: true,
     },
     FeatureSpec {
+        id: Feature::GuardianIncludeAdditionalContext,
+        key: "guardian_include_additional_context",
+        stage: Stage::Stable,
+        default_enabled: true,
+    },
+    FeatureSpec {
         id: Feature::GuardianRecordedItems,
         key: "guardian_recorded_items",
         stage: Stage::UnderDevelopment,
@@ -2126,6 +2149,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::GuardianConversationHistoryTools,
         key: "guardian_conversation_history_tools",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::GuardianDenialReconsideration,
+        key: "guardian_denial_reconsideration",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
@@ -2324,6 +2353,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::AsyncCompaction,
         key: "async_compaction",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AsyncCompactionRootOnly,
+        key: "async_compaction_root_only",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },

@@ -114,6 +114,9 @@ impl App {
         } else {
             None
         };
+        if let Some(startup_pane) = self.sidebars.remove(&None) {
+            self.sidebars.entry(Some(thread_id)).or_insert(startup_pane);
+        }
         self.active_thread_id = Some(thread_id);
         self.active_thread_rx = receiver;
         self.refresh_pending_thread_approvals().await;
@@ -1197,6 +1200,13 @@ impl App {
                 {
                     self.retain_inactive_realtime_transcript(thread_id, &notification);
                 }
+                if let Some(companion) = self.side_companions.get_mut(&thread_id)
+                    && companion.apply_notification(&notification, &guard, || {
+                        self.chat_widget.new_status_indicator()
+                    })
+                {
+                    self.chat_widget.request_redraw();
+                }
                 // Status traffic alone does not change the displayed transcript.
                 guard.replay_may_have_output |= !matches!(
                     &notification,
@@ -1559,6 +1569,8 @@ impl App {
         if should_buffer_initial_replay {
             self.app_event_tx
                 .send(AppEvent::EndInitialHistoryReplayBuffer);
+            self.app_event_tx
+                .send(AppEvent::RestoreBackgroundTerminals(thread_id));
         }
         self.restore_realtime_replay_state_after_replay(
             &replayed_final_items,

@@ -2,6 +2,7 @@
 
 use super::clipboard::PendingCopy;
 use super::*;
+use crate::activation_key_guard::ActivationKeySuppression;
 use crate::bottom_pane::BottomPaneView;
 use crate::clipboard_copy::CopyStatus;
 use crate::clipboard_copy::worker::CopyResult;
@@ -50,6 +51,10 @@ impl ChatWidget {
             .copy_composer_selection_on_release(event, selection_copy, copy)
     }
 
+    pub(crate) fn set_composer_cursor(&mut self, cursor: usize) {
+        self.bottom_pane.set_composer_cursor(cursor);
+    }
+
     pub(crate) fn handle_composer_mouse(&mut self, event: crossterm::event::MouseEvent) -> bool {
         self.bottom_pane.handle_composer_mouse(event)
     }
@@ -85,6 +90,16 @@ impl ChatWidget {
 
     pub(crate) fn take_key_chord_reset(&mut self) -> bool {
         std::mem::take(&mut self.bottom_pane.key_chord_reset_requested)
+    }
+
+    pub(crate) fn suppress_current_view_key_until_release(
+        &mut self,
+        key: KeyBinding,
+        activated_at: Instant,
+        suppression: ActivationKeySuppression,
+    ) {
+        self.bottom_pane
+            .suppress_current_view_key_until_release(key, activated_at, suppression);
     }
 
     pub(crate) fn consume_view_transition_key_event(&mut self, key_event: KeyEvent) -> bool {
@@ -417,6 +432,10 @@ impl ChatWidget {
         self.bottom_pane.set_footer_hint_override(items);
     }
 
+    pub(crate) fn dismiss_provider_view(&mut self, id: &'static str) {
+        self.bottom_pane.dismiss_view_by_id(id);
+    }
+
     pub(crate) fn show_selection_view(&mut self, params: SelectionViewParams) {
         self.bottom_pane.show_selection_view(params);
         self.request_redraw();
@@ -458,6 +477,10 @@ impl ChatWidget {
 
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
+    }
+
+    pub(crate) fn completion_can_yield_focus(&self) -> bool {
+        self.bottom_pane.completion_can_yield_focus()
     }
 
     pub(crate) fn can_launch_external_editor(&self) -> bool {
