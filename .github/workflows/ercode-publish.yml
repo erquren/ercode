@@ -1,12 +1,25 @@
 name: ercode publish completed builds
 run-name: Publish er ${{ inputs.tag }} from completed builds
 on:
+  push:
+    branches: ["release-publish/0.166.0"]
+    paths: [".github/release-request.json"]
   workflow_dispatch:
     inputs:
       tag:
         type: string
         required: true
-        default: "0.166.0"
+        default: "v0.167.0"
+      publish:
+        description: Publish the verified packages (false only checks them)
+        type: boolean
+        required: true
+        default: false
+      replace_draft_assets:
+        description: Replace mismatched draft files (never a published release)
+        type: boolean
+        required: true
+        default: false
       runs:
         description: Comma-separated build workflow run IDs (include retries)
         type: string
@@ -15,7 +28,7 @@ permissions:
   contents: write
   actions: read
 concurrency:
-  group: ercode-publish-${{ inputs.tag }}
+  group: ercode-publish-${{ inputs.tag || '0.166.0' }}
   cancel-in-progress: false
 jobs:
   publish:
@@ -25,13 +38,31 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-          sparse-checkout: scripts/release
+          sparse-checkout: |
+            scripts/release
+            .github
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
         with:
           python-version: "3.12"
+      - name: Test release request safeguards
+        run: python -m unittest discover -s scripts/release -p 'test_*.py'
+      - name: Execute the reviewed versioned request
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/release/run_release_request.py --request .github/release-request.json
       - name: Wait, verify four native packages, and publish
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           BUILD_RUNS: ${{ inputs.runs }}
-        run: python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$BUILD_RUNS"
+          PUBLISH: ${{ inputs.publish }}
+          REPLACE_DRAFT_ASSETS: ${{ inputs.replace_draft_assets }}
+        run: |
+          extra=()
+          [[ "$PUBLISH" == "true" ]] || extra+=(--check-only)
+          if [[ "$REPLACE_DRAFT_ASSETS" == "true" ]]; then
+            extra+=(--replace-draft-assets)
+          fi
+          python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$BUILD_RUNS" "${extra[@]}"

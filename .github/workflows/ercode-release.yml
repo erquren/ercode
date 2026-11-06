@@ -1,14 +1,29 @@
 name: ercode release
-run-name: ercode release ${{ inputs.tag }}
+run-name: ercode packages ${{ inputs.tag || github.ref_name }}
 
 on:
+  push:
+    branches: [main, "fix/**", "release-build/**"]
+    paths: ["scripts/release/**", ".github/workflows/ercode-release.yml"]
+  pull_request:
+    paths: ["scripts/release/**", ".github/workflows/ercode-release.yml"]
   workflow_dispatch:
     inputs:
       tag:
         description: Existing release tag to build
         required: true
-        default: "0.166.0"
+        default: "v0.167.0"
         type: string
+      publish:
+        description: Publish after all four packages pass (requires an existing tag)
+        required: true
+        default: false
+        type: boolean
+      replace_draft_assets:
+        description: Replace mismatched draft files (never a published release)
+        required: true
+        default: false
+        type: boolean
       platform:
         description: Build all platforms, or retry one platform without publishing
         required: true
@@ -25,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ercode-release-${{ inputs.tag }}-${{ inputs.platform }}
+  group: ercode-release-${{ inputs.tag || github.ref }}-${{ inputs.platform || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -33,7 +48,66 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.value }}
+      tag: ${{ steps.request.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      source_sha: ${{ steps.version.outputs.source_sha }}
     steps:
+      - name: Select source for the package check
+        id: request
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, re
+          tag = os.environ["REQUESTED_TAG"]
+          branch = os.environ["BRANCH_NAME"]
+          if not tag and os.environ["EVENT_NAME"] == "push" and branch.startswith("release-build/"):
+              tag = branch.removeprefix("release-build/")
+          if tag:
+              assert re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", tag), tag
+          ref = "refs/tags/" + tag if tag else os.environ["SOURCE_SHA"]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"tag={tag}\nref={ref}\n")
+          PYTHON
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ steps.request.outputs.ref }}
+          persist-credentials: false
+          path: source
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          path: packaging
+          sparse-checkout: scripts/release
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Test packaging helpers
+        run: python -m unittest discover -s packaging/scripts/release -p 'test_*.py'
+      - name: Resolve immutable source commit and version
+        id: version
+        env:
+          REQUESTED_TAG: ${{ steps.request.outputs.tag }}
+        run: |
+          python - <<'PYTHON'
+          import os, re, subprocess, tomllib
+          from pathlib import Path
+          version = tomllib.loads(Path("source/codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]
+          tag = os.environ["REQUESTED_TAG"]
+          commit = subprocess.check_output(["git", "-C", "source", "rev-parse", "HEAD"], text=True).strip()
+          if tag:
+              assert re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", tag), tag
+              assert version == tag.removeprefix("v"), (version, tag)
+              ref = subprocess.check_output(["git", "-C", "source", "ls-remote", "origin", f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}"], text=True)
+              refs = {name: sha for sha, name in (line.split() for line in ref.splitlines())}
+              expected = refs.get(f"refs/tags/{tag}^{{}}", refs.get(f"refs/tags/{tag}"))
+              assert expected and commit == expected, "Checkout must match the exact existing release tag"
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={version}\nsource_sha={commit}\n")
+          PYTHON
       - id: matrix
         env:
           SELECTED_PLATFORM: ${{ inputs.platform }}
@@ -46,7 +120,7 @@ jobs:
               dict(platform="macos-aarch64", target="aarch64-apple-darwin", runner="macos-15", jobs=1),
               dict(platform="windows-x86_64", target="x86_64-pc-windows-msvc", runner="windows-2022", jobs=2),
           ]
-          selected = os.environ["SELECTED_PLATFORM"]
+          selected = os.environ["SELECTED_PLATFORM"] or "all"
           rows = [row for row in rows if selected == "all" or row["platform"] == selected]
           assert rows, selected
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
@@ -63,7 +137,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_VERSION: ${{ needs.plan.outputs.version }}
       TARGET: ${{ matrix.target }}
       CODEX_REPO_ROOT: ${{ github.workspace }}/source
       CARGO_BUILD_JOBS: ${{ matrix.jobs }}
@@ -88,7 +162,7 @@ jobs:
           sparse-checkout: scripts/release
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ needs.plan.outputs.source_sha }}
           path: source
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
@@ -100,7 +174,7 @@ jobs:
       - name: Validate release version
         shell: bash
         run: |
-          python -c 'import os,tomllib; from pathlib import Path; v=tomllib.loads(Path("source/codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]; assert v==os.environ["RELEASE_TAG"], (v,os.environ["RELEASE_TAG"])'
+          python -c 'import os,tomllib; from pathlib import Path; v=tomllib.loads(Path("source/codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]; assert v==os.environ["RELEASE_VERSION"], (v,os.environ["RELEASE_VERSION"])'
       - name: Free build space on Linux
         if: runner.os == 'Linux'
         shell: bash
@@ -171,7 +245,7 @@ jobs:
           python packaging/scripts/release/package_er.py --source source --target "$TARGET" --output-dir dist "${extra[@]}"
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
         with:
-          name: er-${{ inputs.tag }}-${{ matrix.platform }}
+          name: er-${{ needs.plan.outputs.tag || needs.plan.outputs.version }}-${{ matrix.platform }}
           path: |
             dist/*.tar.gz
             dist/*.zip
@@ -181,46 +255,33 @@ jobs:
 
   publish:
     name: Publish four-platform release
-    if: inputs.platform == 'all'
-    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.platform == 'all'
+    needs: [plan, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: ercode-publish-${{ needs.plan.outputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
+      actions: read
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          pattern: er-${{ inputs.tag }}-*
-          path: dist
-          merge-multiple: true
-      - name: Verify archives and publish
+          persist-credentials: false
+          sparse-checkout: scripts/release
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.12"
+      - name: Verify provenance, upload and publish the complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          REPLACE_DRAFT_ASSETS: ${{ inputs.replace_draft_assets }}
         shell: bash
         run: |
-          cd dist
-          for platform in linux-x86_64-musl linux-aarch64-musl macos-aarch64; do
-            test -f "er-${RELEASE_TAG}-${platform}.tar.gz"
-            test -f "er-${RELEASE_TAG}-${platform}.tar.gz.sha256"
-          done
-          test -f "er-${RELEASE_TAG}-windows-x86_64.zip"
-          test -f "er-${RELEASE_TAG}-windows-x86_64.zip.sha256"
-          sha256sum -c *.sha256
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --draft --title "er ${RELEASE_TAG}" --notes 'Cross-platform er runtime packages.'
+          extra=()
+          if [[ "$REPLACE_DRAFT_ASSETS" == "true" ]]; then
+            extra+=(--replace-draft-assets)
           fi
-          gh release upload "$RELEASE_TAG" *.tar.gz *.zip *.sha256 --clobber
-          cat > release-notes.md <<'NOTES'
-          Complete runtime packages for Windows x86_64, Linux x86_64 MUSL, Linux ARM64 MUSL and macOS ARM64.
-
-          Each package includes er, its private runtime helpers, license notices, installation instructions and build provenance. SHA-256 files are provided alongside every archive.
-
-          Linux/macOS: extract and run `python3 install.py .`.
-          Windows: extract and run `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1`.
-
-          After upgrading an earlier 0.166.0 build, launch `er --no-daemon` to use the new backend. This version includes live reasoning text estimates and separate input/output request averages in the completion line, excluding gaps spent waiting for builds and tools.
-
-          macOS packages are ad-hoc signed, without Apple Developer ID notarization.
-          NOTES
-          gh release edit "$RELEASE_TAG" --draft=false --latest --title "er ${RELEASE_TAG}" --notes-file release-notes.md
+          python scripts/release/publish_er.py --tag "$RELEASE_TAG" --runs "$GITHUB_RUN_ID" "${extra[@]}"

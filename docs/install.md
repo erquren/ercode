@@ -3,7 +3,9 @@
 # Installing and building ercode CLI
 
 This fork provides a terminal application, not the official Codex desktop app or
-cloud service. There is no separate published ercode installer in this branch.
+cloud service. For portable release downloads and native build workflows, see
+[Portable er releases](releases.md). Those archives run directly after extraction;
+the build prerequisites below are only needed to compile from source.
 
 ## Prerequisites
 

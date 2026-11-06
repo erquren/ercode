@@ -40,6 +40,9 @@ package details. No ercode npm package, installer or prebuilt release is promise
 by this branch. The upstream `@openai/codex` package installs official Codex,
 not this fork.
 
+For extract-and-run Windows, Linux and macOS archives, see
+[portable er releases](docs/releases.md).
+
 ## Compatibility
 
 - User configuration and authentication default to `~/.ercode`, separate from
