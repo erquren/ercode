@@ -154,6 +154,48 @@
       ],
       "type": "string"
     },
+    "AccountSecuritySetupAction": {
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "url"
+      ],
+      "type": "object"
+    },
+    "AccountSecuritySetupNotice": {
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "action": {
+          "$ref": "#/definitions/AccountSecuritySetupAction"
+        },
+        "description": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "userId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId",
+        "action",
+        "description",
+        "title",
+        "userId"
+      ],
+      "type": "object"
+    },
     "AccountSession": {
       "properties": {
         "displayName": {
@@ -481,6 +523,102 @@
       "title": "AgentMessageDeltaNotification",
       "type": "object"
     },
+    "AgentMessageDisplay": {
+      "description": "How Chat should present a recovered answer.",
+      "oneOf": [
+        {
+          "properties": {
+            "annotation": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AnswerAnnotation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mode": {
+              "enum": [
+                "show"
+              ],
+              "type": "string"
+            },
+            "trustedContacts": {
+              "$ref": "#/definitions/TrustedContacts"
+            },
+            "version": {
+              "enum": [
+                1
+              ],
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "mode",
+            "trustedContacts",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "enum": [
+                "hide"
+              ],
+              "type": "string"
+            },
+            "replacement": {
+              "$ref": "#/definitions/AnswerReplacement"
+            },
+            "version": {
+              "enum": [
+                1
+              ],
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "mode",
+            "replacement",
+            "version"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "mode": {
+              "enum": [
+                "block"
+              ],
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/definitions/BlockReason"
+            },
+            "version": {
+              "enum": [
+                1
+              ],
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "mode",
+            "reason",
+            "version"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "AgentMessageInputContent": {
       "oneOf": [
         {
@@ -525,6 +663,27 @@
         }
       ]
     },
+    "AgentMessageModeration": {
+      "properties": {
+        "display": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AgentMessageDisplay"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "moderated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "moderated"
+      ],
+      "type": "object"
+    },
     "AgentPath": {
       "type": "string"
     },
@@ -546,6 +705,47 @@
         }
       },
       "type": "object"
+    },
+    "AnswerAnnotation": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "wellbeingHelpline"
+              ],
+              "type": "string"
+            },
+            "subject": {
+              "$ref": "#/definitions/HelplineSubject"
+            }
+          },
+          "required": [
+            "kind",
+            "subject"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "AnswerReplacement": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "wellbeingPromptHelpline"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "WellbeingPromptHelplineAnswerReplacement",
+          "type": "object"
+        }
+      ]
     },
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
@@ -1604,6 +1804,50 @@
         "amazon-bedrock-runtime"
       ],
       "type": "string"
+    },
+    "BlockReason": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "protection"
+              ],
+              "type": "string"
+            },
+            "protectionType": {
+              "description": "Identifies the same moderation row that Chat writes on the live path.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "protectionType"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "cyber"
+              ],
+              "type": "string"
+            },
+            "trustedAccess": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "KindBlockReason",
+          "type": "object"
+        }
+      ]
     },
     "BrowserUseAccessApprovalLifetime": {
       "enum": [
@@ -3594,7 +3838,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GatewayOAuthReadParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -3617,7 +3868,14 @@
               "type": "string"
             },
             "params": {
-              "type": "null"
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/GatewayOAuthLoginParams"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -4029,6 +4287,29 @@
             "method"
           ],
           "title": "Account/logoutRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/securitySetup/read"
+              ],
+              "title": "Account/securitySetup/readRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/securitySetup/readRequest",
           "type": "object"
         },
         {
@@ -4572,6 +4853,13 @@
             "threadRollbackFailed",
             "sandboxError",
             "other"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The workspace's inference hook explicitly denied this request.",
+          "enum": [
+            "inferenceHookDenied"
           ],
           "type": "string"
         },
@@ -8821,10 +9109,34 @@
           "type": "object"
         },
         {
-          "properties": {
-            "audio_url": {
-              "type": "string"
+          "anyOf": [
+            {
+              "properties": {
+                "audio_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "audio_url"
+              ],
+              "title": "AudioUrlFunctionCallOutputContentItem",
+              "type": "object"
             },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
+          "description": "Inline audio data or an uploaded file loaded by the Responses API.",
+          "properties": {
             "type": {
               "enum": [
                 "input_audio"
@@ -8834,7 +9146,6 @@
             }
           },
           "required": [
-            "audio_url",
             "type"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
@@ -9055,6 +9366,13 @@
             "null"
           ]
         },
+        "loginId": {
+          "description": "Identifies the completed device login attempt.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "providerId": {
           "type": "string"
         },
@@ -9069,9 +9387,70 @@
       "title": "GatewayOAuthChangedNotification",
       "type": "object"
     },
+    "GatewayOAuthLoginParams": {
+      "description": "Authorize a configured provider without changing the default or any thread's provider.",
+      "properties": {
+        "deviceAuth": {
+          "description": "Select device authorization when the server advertises support for it.",
+          "type": "boolean"
+        },
+        "modelProvider": {
+          "description": "Defaults to the current provider when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "GatewayOAuthLoginResponse": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "prompt": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GatewayOAuthPrompt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
       "title": "GatewayOAuthLoginResponse",
+      "type": "object"
+    },
+    "GatewayOAuthPrompt": {
+      "properties": {
+        "loginId": {
+          "type": "string"
+        },
+        "userCode": {
+          "type": "string"
+        },
+        "verificationUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "loginId",
+        "userCode",
+        "verificationUrl"
+      ],
+      "type": "object"
+    },
+    "GatewayOAuthReadParams": {
+      "description": "Read credential readiness for a configured provider without starting browser login.",
+      "properties": {
+        "modelProvider": {
+          "description": "Defaults to the current provider when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "GatewayOAuthReadResponse": {
@@ -9104,6 +9483,11 @@
             }
           ],
           "description": "Null when the effective provider does not use gateway OAuth."
+        },
+        "supportsDeviceAuth": {
+          "default": false,
+          "description": "Whether the administrator configured a device authorization endpoint.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -9224,12 +9608,38 @@
         },
         "requiresOpenaiAuth": {
           "type": "boolean"
+        },
+        "userId": {
+          "default": null,
+          "description": "ChatGPT user ID belonging to this account response, when available.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "requiresOpenaiAuth"
       ],
       "title": "GetAccountResponse",
+      "type": "object"
+    },
+    "GetAccountSecuritySetupResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Optional security reminder bound to the account that fetched it. Unavailable or ineligible accounts return no notice; this read never changes account security.",
+      "properties": {
+        "notice": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AccountSecuritySetupNotice"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "title": "GetAccountSecuritySetupResponse",
       "type": "object"
     },
     "GetAccountTokenUsageParams": {
@@ -9646,6 +10056,13 @@
       ],
       "title": "GuardianWarningNotification",
       "type": "object"
+    },
+    "HelplineSubject": {
+      "enum": [
+        "answer",
+        "prompt"
+      ],
+      "type": "string"
     },
     "HookCompletedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -10535,6 +10952,13 @@
           ],
           "description": "Controls how much MCP inventory data to fetch for each server. Defaults to `Full` when omitted."
         },
+        "environmentId": {
+          "description": "Select this environment's registration. Requires `serverName` and `threadId`. When omitted, a named request uses the same server as older clients.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "limit": {
           "description": "Optional page size; defaults to a server-defined value.",
           "format": "uint32",
@@ -11274,6 +11698,13 @@
             "null"
           ]
         },
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "originCallId": {
           "description": "Originating MCP tool call used to select the resource's app.",
           "type": [
@@ -11506,6 +11937,13 @@
           ],
           "description": "Registration strategy for this login only; omission selects automatic discovery."
         },
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -11583,6 +12021,13 @@
       "properties": {
         "authStatus": {
           "$ref": "#/definitions/McpAuthStatus"
+        },
+        "environmentId": {
+          "description": "Environment that contributed this registration; null for a thread-wide server. Older servers omit this field.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "httpOrigin": {
           "description": "HTTP origin of the effective configured endpoint, including plugin servers. Excludes credentials, path, query, and fragment; null for non-HTTP transports.",
@@ -11672,6 +12117,13 @@
     "McpServerStatusUpdatedNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "environmentId": {
+          "description": "Registration scope, not necessarily the server's execution environment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "error": {
           "type": [
             "string",
@@ -11713,6 +12165,13 @@
       "properties": {
         "_meta": true,
         "arguments": true,
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "server": {
           "type": "string"
         },
@@ -12847,6 +13306,30 @@
       ],
       "type": "string"
     },
+    "NullableGatewayOAuthLoginParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GatewayOAuthLoginParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nullable_GatewayOAuthLoginParams"
+    },
+    "NullableGatewayOAuthReadParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/GatewayOAuthReadParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nullable_GatewayOAuthReadParams"
+    },
     "NullableGetAccountRateLimitsParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "anyOf": [
@@ -13628,7 +14111,7 @@
           ]
         },
         "defaultPrompt": {
-          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 128 characters per entry.",
+          "description": "Starter prompts for the plugin. Capped at 3 entries with a maximum of 512 characters per entry.",
           "items": {
             "type": "string"
           },
@@ -15141,6 +15624,16 @@
             "$ref": "#/definitions/UserInput"
           },
           "type": "array"
+        },
+        "responsesapiClientMetadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Metadata retained with this input, including across reconnect and restoration.",
+          "type": [
+            "object",
+            "null"
+          ]
         }
       },
       "required": [
@@ -21076,6 +21569,17 @@
               ],
               "default": null
             },
+            "moderation": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/AgentMessageModeration"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "phase": {
               "anyOf": [
                 {
@@ -21358,6 +21862,13 @@
               "format": "int64",
               "type": [
                 "integer",
+                "null"
+              ]
+            },
+            "environmentId": {
+              "description": "Registration scope, not necessarily the server's execution environment.",
+              "type": [
+                "string",
                 "null"
               ]
             },
@@ -24809,6 +25320,13 @@
         }
       },
       "type": "object"
+    },
+    "TrustedContacts": {
+      "enum": [
+        "check",
+        "skip"
+      ],
+      "type": "string"
     },
     "Turn": {
       "properties": {

@@ -12,7 +12,7 @@ on:
       tag:
         description: Existing release tag to build
         required: true
-        default: "v0.167.0"
+        default: "0.169.0"
         type: string
       publish:
         description: Publish after all four packages pass (requires an existing tag)
@@ -184,7 +184,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.99.1"
           targets: ${{ matrix.target }}
       - name: Set up Zig for MUSL
         if: runner.os == 'Linux'

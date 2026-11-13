@@ -76,6 +76,7 @@ async fn forward_events_filters_private_events_before_blocked_send_is_cancelled(
     for msg in [
         EventMsg::McpStartupUpdate(McpStartupUpdateEvent {
             server: "pending".to_string(),
+            environment_id: None,
             status: McpStartupStatus::Starting,
         }),
         EventMsg::McpStartupComplete(McpStartupCompleteEvent::default()),
@@ -262,11 +263,7 @@ async fn delegate_start_analytics_honors_child_opt_out_with_enabled_parent() {
         .services
         .analytics_events_client = client.clone();
     parent_session
-        .set_app_server_client_info(
-            Some("codex-test".to_string()),
-            Some("1.0.0".to_string()),
-            /*mcp_elicitations_auto_deny*/ false,
-        )
+        .set_app_server_client_info(Some("codex-test".to_string()), Some("1.0.0".to_string()))
         .await
         .expect("set parent client metadata");
 

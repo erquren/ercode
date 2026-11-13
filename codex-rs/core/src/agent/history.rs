@@ -13,7 +13,7 @@ use crate::context::ModelInstructions;
 use crate::context::MultiAgentModeInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::MultiAgentUsageHint;
-use crate::context::world_state::IncrementalToolsHint;
+use crate::context::world_state::IncrementalToolsUpdate;
 use crate::context::world_state::PersistentModeState;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::tasks::InterruptedTurnHistoryMarker;
@@ -38,7 +38,6 @@ use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store::LoadThreadHistoryParams;
-use codex_thread_store::ReadThreadParams;
 
 fn keep_forked_rollout_item(item: &RolloutItem, preserve_context_baselines: bool) -> bool {
     match item {
@@ -132,29 +131,14 @@ pub(super) async fn load_agent_model_context(
     state: &ThreadManagerState,
     thread_id: ThreadId,
     history_mode: ThreadHistoryMode,
-) -> CodexResult<Option<codex_thread_store::StoredModelContext>> {
+) -> CodexResult<codex_thread_store::StoredModelContext> {
+    let params = LoadThreadHistoryParams {
+        thread_id,
+        include_archived: true,
+    };
     match history_mode {
-        ThreadHistoryMode::Legacy => Ok(state
-            .read_stored_thread(ReadThreadParams {
-                thread_id,
-                include_archived: true,
-                include_history: true,
-            })
-            .await?
-            .history
-            .map(|history| codex_thread_store::StoredModelContext {
-                thread_id,
-                revision: history.revision,
-                items: history.items,
-            })),
-        ThreadHistoryMode::Paginated => Ok(Some(
-            state
-                .load_latest_model_context(LoadThreadHistoryParams {
-                    thread_id,
-                    include_archived: true,
-                })
-                .await?,
-        )),
+        ThreadHistoryMode::Legacy => state.load_legacy_model_context(params).await,
+        ThreadHistoryMode::Paginated => state.load_latest_model_context(params).await,
     }
 }
 
@@ -227,11 +211,6 @@ pub(super) async fn prepare_forked_history(
     let mut forked_rollout_items =
         load_agent_model_context(state, parent_thread_id, parent_history_mode)
             .await?
-            .ok_or_else(|| {
-                CodexErr::Fatal(format!(
-                    "parent thread history unavailable for fork: {parent_thread_id}"
-                ))
-            })?
             .items;
 
     let multi_agent_v2_usage_hint_texts_to_filter: Vec<String> =
@@ -320,7 +299,7 @@ pub(super) async fn prepare_forked_history(
             content.retain_mut(|content_item| {
                 if matches!(
                     content_item.kind().as_str(),
-                    BaseInstructionsFragment::KIND | IncrementalToolsHint::KIND
+                    BaseInstructionsFragment::KIND | IncrementalToolsUpdate::KIND
                 ) {
                     return preserve_context_baselines;
                 }

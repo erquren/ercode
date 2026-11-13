@@ -9,7 +9,7 @@ on:
       tag:
         type: string
         required: true
-        default: "v0.167.0"
+        default: "0.169.0"
       publish:
         description: Publish the verified packages (false only checks them)
         type: boolean

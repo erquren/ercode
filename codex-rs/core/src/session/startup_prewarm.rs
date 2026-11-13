@@ -347,7 +347,8 @@ async fn schedule_startup_prewarm_inner(
             crate::agent::host::service_tier(
                 &session,
                 startup_turn_context.initial_settings.service_tier.clone(),
-            ),
+            )
+            .await,
             &session.features(),
             &preconnect_model_info,
         )
@@ -440,7 +441,7 @@ async fn schedule_startup_prewarm_inner(
     // Prewarm establishes the request baseline before the first turn can change effort.
     client_session
         .prewarm_websocket(
-            &startup_prompt,
+            &Arc::new(startup_prompt),
             &step_context.settings.model_info,
             &step_context.session_telemetry,
             session

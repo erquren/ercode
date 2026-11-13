@@ -5,6 +5,7 @@
 use super::App;
 use super::agents_overview::AGENTS_OVERVIEW_VIEW_ID;
 use super::agents_overview_details::preview_agent_message;
+use super::agents_overview_discovery::is_overview_root;
 use super::agents_overview_discovery::list_pinned_threads;
 use super::app_server_event_targets::ServerNotificationThreadTarget;
 use super::app_server_event_targets::server_notification_thread_target;
@@ -15,7 +16,6 @@ use crate::chatwidget::ChatWidget;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadLoadedListParams;
@@ -26,7 +26,6 @@ use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::ThreadTurnsListParams;
 use codex_app_server_protocol::ThreadTurnsListResponse;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::SubAgentSource;
 use futures::StreamExt;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -57,15 +56,11 @@ fn detail_thread_ids<'a>(threads: impl Iterator<Item = &'a Thread>) -> Vec<Threa
 impl App {
     pub(super) fn remove_agents_overview_thread(&mut self, thread_id: ThreadId) {
         self.prepare_agents_overview_removal(&std::collections::HashSet::from([thread_id]));
+        self.agents_overview.search_matches.remove(&thread_id);
         self.agents_overview.removed_threads.insert(thread_id);
         self.agents_overview.unread.remove(&thread_id);
         if let Some(Some(thread)) = self.agents_overview.threads.remove(&thread_id)
-            && !thread.ephemeral
-            && thread.parent_thread_id.is_none()
-            && !matches!(
-                thread.source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            )
+            && is_overview_root(&thread)
             && !self.agents_overview.hidden_threads.contains(&thread_id)
         {
             self.agents_overview.refill_count += 1;
@@ -73,7 +68,7 @@ impl App {
     }
 
     pub(super) fn show_more_agents_overview(&mut self, app_server: &AppServerSession) {
-        if !self.agents_overview.discovery.has_more() {
+        if !self.agents_overview.has_more(app_server.backend_id()) {
             return;
         }
         self.agents_overview.show_more_requested |= self.agents_overview.refill_count == 0;
@@ -100,7 +95,8 @@ impl App {
             .agents_overview
             .threads
             .get_mut(&thread_id)
-            .and_then(Option::as_mut);
+            .and_then(Option::as_mut)
+            .or_else(|| self.agents_overview.search_matches.get_mut(&thread_id));
         match notification {
             ServerNotification::ThreadReadStateChanged(change) => {
                 if change.read_state.first_unread.is_some() {
@@ -127,6 +123,7 @@ impl App {
                 self.agents_overview.removed_threads.remove(&thread_id);
                 let mut thread = started.thread.clone();
                 thread.turns.clear();
+                self.agents_overview.search_matches.remove(&thread_id);
                 self.agents_overview.threads.insert(thread_id, Some(thread));
             }
             ServerNotification::ThreadArchived(_) | ServerNotification::ThreadDeleted(_) => {
@@ -214,7 +211,7 @@ impl App {
         {
             self.agents_overview.refresh_thread_ids.insert(thread_id);
         }
-        if self.agents_overview.request_id.is_some() {
+        if self.agents_overview.active_refresh.is_some() {
             // Replay the latest notification of each kind after the read, in arrival order.
             // This also protects sessions whose metadata has not arrived in the initial seed.
             let pending = self
@@ -253,7 +250,6 @@ impl App {
             .chat_widget
             .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
             .is_none()
-            || (!self.agents_overview.initialized && self.agents_overview.request_id.is_none())
         {
             return;
         }
@@ -261,26 +257,34 @@ impl App {
     }
 
     fn start_agents_overview_refresh(&mut self, app_server: &AppServerSession) {
+        let backend_id = app_server.backend_id();
+        let initialized = self.agents_overview.initialized.contains(&backend_id);
+        let source_has_more = self.agents_overview.has_more(backend_id);
         let visible = self
             .chat_widget
             .selected_index_for_present_view(AGENTS_OVERVIEW_VIEW_ID)
             .is_some();
-        if !visible && self.agents_overview.initialized {
+        if !visible && initialized {
             return;
         }
-        if self.agents_overview.request_id.is_some() {
+        if self.agents_overview.active_refresh.is_some() {
             self.agents_overview.refresh_pending = true;
             return;
         }
-        if self.agents_overview.initialized
+        if initialized
             && self.agents_overview.refresh_thread_ids.is_empty()
             && !self.agents_overview.show_more_requested
-            && !(self.agents_overview.refill_count > 0 && self.agents_overview.discovery.has_more())
+            && !(self.agents_overview.refill_count > 0 && source_has_more)
             && !self.agents_overview.pin_refresh_requested
         {
             return;
         }
 
+        let owns_thread = |thread_id| {
+            self.backend_registry
+                .owner(thread_id)
+                .is_none_or(|owner| owner == backend_id)
+        };
         let mut unread_rows = Vec::new();
         if std::mem::take(&mut self.agents_overview.pin_refresh_requested) {
             unread_rows.extend(
@@ -288,18 +292,17 @@ impl App {
                     .visible_thread_ids
                     .iter()
                     .copied()
-                    .filter(|id| self.agents_overview.unread.contains(id)),
+                    .filter(|id| self.agents_overview.unread.contains(id) && owns_thread(*id)),
             );
         }
         let request_id = Uuid::new_v4();
-        self.agents_overview.request_id = Some(request_id);
-        let initialized = self.agents_overview.initialized;
+        self.agents_overview.active_refresh = Some((request_id, backend_id));
+        self.agents_overview.refresh_invalidated = false;
         let refill = self.agents_overview.refill_count;
         let show_more =
             refill == 0 && std::mem::take(&mut self.agents_overview.show_more_requested);
         self.agents_overview.refresh_show_more = show_more;
-        let discover =
-            !initialized || show_more || (refill > 0 && self.agents_overview.discovery.has_more());
+        let discover = !initialized || show_more || (refill > 0 && source_has_more);
         let limit = if initialized && refill > 0 {
             refill.min(10)
         } else {
@@ -307,13 +310,20 @@ impl App {
         };
         let mut discovery = discover.then(|| {
             if initialized {
-                self.agents_overview.discovery.clone()
+                self.agents_overview
+                    .discovery
+                    .get(&backend_id)
+                    .cloned()
+                    .unwrap_or_default()
             } else {
-                self.agents_overview.removed_threads.clear();
+                self.agents_overview
+                    .removed_threads
+                    .retain(|id| !owns_thread(*id));
                 Default::default()
             }
         });
         let mut thread_ids = std::mem::take(&mut self.agents_overview.refresh_thread_ids);
+        thread_ids.retain(|id| owns_thread(*id));
         self.agents_overview.active_refresh_thread_ids = thread_ids.clone();
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
@@ -333,7 +343,7 @@ impl App {
                         for (thread, is_unread) in pinned_threads {
                             if let Ok(thread_id) = ThreadId::from_string(&thread.id) {
                                 ids.push(thread_id);
-                                threads.insert(thread_id, Some((thread, is_unread)));
+                                threads.insert(thread_id, Some((thread, is_unread, None)));
                             }
                         }
                         Some(Some(ids))
@@ -377,7 +387,7 @@ impl App {
                     thread_ids.extend(detail_thread_ids(recent.iter().map(|(thread, _)| thread)));
                     for (thread, is_unread) in recent {
                         if let Ok(thread_id) = ThreadId::from_string(&thread.id) {
-                            threads.insert(thread_id, Some((thread, is_unread)));
+                            threads.insert(thread_id, Some((thread, is_unread, None)));
                         }
                     }
                 }
@@ -417,7 +427,8 @@ impl App {
                             })
                             .await
                         {
-                            Ok(mut response) => {
+                            Ok(response) => {
+                                let mut latest_prompt = None;
                                 let mut last_message = None;
                                 if let Ok(turns) = request_handle
                                     .request_typed::<ThreadTurnsListResponse>(
@@ -441,9 +452,13 @@ impl App {
                                         content, ..
                                     }) = turn.item_payloads().next()
                                     {
-                                        response.thread.preview =
-                                            ChatWidget::user_message_display_from_inputs(content)
-                                                .message;
+                                        latest_prompt =
+                                            Some(super::agents_overview_details::preview_markdown(
+                                                &ChatWidget::user_message_display_from_inputs(
+                                                    content,
+                                                )
+                                                .message,
+                                            ));
                                     }
                                     last_message =
                                         turn.item_payloads().rev().find_map(|item| match item {
@@ -456,7 +471,11 @@ impl App {
                                 let unread = response
                                     .read_state
                                     .is_some_and(|state| state.first_unread.is_some());
-                                Some((thread_id, (response.thread, unread), last_message))
+                                Some((
+                                    thread_id,
+                                    (response.thread, unread, latest_prompt),
+                                    last_message,
+                                ))
                             }
                             Err(error) => {
                                 tracing::warn!(%thread_id, %error, "failed to read agent thread");

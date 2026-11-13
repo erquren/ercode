@@ -1,3 +1,4 @@
+use codex_login::AuthOwner;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -103,7 +104,7 @@ enum CompactionRequestKind<'a> {
 
 enum CompactionRequestTransport<'a> {
     Foreground(&'a mut ModelClientSession),
-    Background(Option<String>, Option<u64>),
+    Background(Option<String>, Option<AuthOwner>),
 }
 
 /// The caller decides whether a declined prepared result needs a foreground request.
@@ -291,14 +292,14 @@ struct RemoteCompactionV2Output {
 async fn run_remote_compaction_request_v2(
     sess: &Session,
     step_context: &StepContext,
-    prompt: &Prompt,
+    prompt: &Arc<Prompt>,
     responses_metadata: &CodexResponsesMetadata,
     transport: &mut CompactionRequestTransport<'_>,
     submitted_audio: Option<&crate::context_manager::rejected_audio::SubmittedFileAudio>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
     let client_session = match transport {
-        CompactionRequestTransport::Background(turn_state, auth_owner_generation) => {
+        CompactionRequestTransport::Background(turn_state, auth_owner) => {
             let settings = &step_context.settings;
             let cancellation = crate::session::async_compaction::shutdown_cancellation(sess).await;
             let effort = sess
@@ -312,7 +313,7 @@ async fn run_remote_compaction_request_v2(
                 biased;
                 _ = cancellation.cancelled() => return Err(CodexErr::TurnAborted),
                 stream = http_executor.stream_responses_http(
-                    &turn_state, *auth_owner_generation, /*event_sender*/ None, prompt, &settings.model_info, &step_context.session_telemetry, effort,
+                    &turn_state, auth_owner.clone(), /*event_sender*/ None, prompt, &settings.model_info, &step_context.session_telemetry, effort,
                     settings.reasoning_summary, settings.service_tier.clone(), responses_metadata,
                     &trace,
                 ) => stream?,
@@ -1441,6 +1442,7 @@ mod tests {
             response_id: "resp-compact".into(),
             token_usage: Some(usage.clone()),
             usage_metadata: None,
+            reasoning_removals: None,
             end_turn: Some(true),
         })]);
         let result = collect_compaction_output(
@@ -1494,6 +1496,7 @@ mod tests {
                     amount: Some("0.125".to_string()),
                     metadata: Some(serde_json::json!({ "extra": { "label": "example" } })),
                 }),
+                reasoning_removals: None,
                 end_turn: Some(true),
             }),
         ]);

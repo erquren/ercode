@@ -48,6 +48,7 @@ use self::input_boundary::terminal_input_is_readable;
 use crate::custom_terminal;
 use crate::custom_terminal::Terminal as CustomTerminal;
 use crate::insert_history::HistoryLineWrapPolicy;
+use crate::insert_history::InsertHistoryMode;
 use crate::notifications::DesktopNotificationBackend;
 use crate::notifications::detect_backend;
 use crate::terminal_hyperlinks::HyperlinkLine;
@@ -73,6 +74,9 @@ mod job_control;
 mod keyboard_modes;
 mod link_pointer;
 pub(crate) use link_pointer::PointerShape;
+#[cfg(test)]
+#[path = "tui/inline_image_history_tests.rs"]
+mod inline_image_history_tests;
 mod notification_preview;
 #[cfg(test)]
 #[path = "tui/owned_screen_tests.rs"]
@@ -709,6 +713,8 @@ pub(crate) fn tmux_fullscreen_image_base() -> Option<u32> {
 pub struct Tui {
     pub(crate) link_hover: link_pointer::LinkHover,
     frame_requester: FrameRequester,
+    shortcut_hud: Option<crate::bottom_pane::ShortcutHud>,
+    pub(crate) shortcut_hud_area: Option<Rect>,
     draw_tx: broadcast::Sender<()>,
     pub(super) event_broker: Arc<EventBroker>,
     pub(crate) terminal_size_tags: crate::terminal_size_telemetry::LaunchTags,
@@ -788,6 +794,8 @@ impl Tui {
         Self {
             link_hover: link_pointer::LinkHover::default(),
             frame_requester,
+            shortcut_hud: None,
+            shortcut_hud_area: None,
             draw_tx,
             event_broker: Arc::new(event_broker),
             terminal_size_tags: Vec::new(),
@@ -1139,6 +1147,7 @@ impl Tui {
         Self::flush_pending_history_lines(
             &mut self.terminal,
             &mut self.pending_history_lines,
+            &mut self.retained_images,
             self.scrollback,
             screen_size,
         )?;
@@ -1321,22 +1330,38 @@ impl Tui {
     }
 
     /// Write any buffered history lines above the viewport and clear the buffer.
-    fn flush_pending_history_lines(
-        terminal: &mut Terminal,
+    fn flush_pending_history_lines<B>(
+        terminal: &mut CustomTerminal<B>,
         pending_history_lines: &mut Vec<PendingHistoryLines>,
+        retained_images: &mut Vec<crate::transcript_image::ImagePlacement>,
         scrollback: ScrollbackStrategy,
         screen_size: Size,
-    ) -> Result<()> {
-        if pending_history_lines.is_empty() {
-            return Ok(());
-        }
-
-        // A failed write can already have emitted part of this batch. Never retry that batch
-        // automatically: replaying it would duplicate the successful prefix. Remaining batches
-        // stay queued, and the caller reports the I/O error.
-        while !pending_history_lines.is_empty() {
-            let batch = pending_history_lines.remove(/*index*/ 0);
+    ) -> Result<()>
+    where
+        B: Backend<Error = io::Error> + Write,
+    {
+        while let Some(batch) = pending_history_lines.first() {
             let mode = scrollback.history_insertion_mode(batch.wrap_policy);
+            let viewport = terminal.viewport_area;
+            // Standard insertion scrolls only above a bottom-aligned viewport when there
+            // are at least two history rows (the minimum for a DEC scroll region).
+            let preserves_direct_kitty = mode == InsertHistoryMode::Standard
+                && viewport.top() > 1
+                && viewport.bottom() == screen_size.height
+                && screen_size == terminal.last_known_screen_size
+                && terminal.tmux_kitty_image_base.is_none();
+            if retained_images.iter().any(|placement| {
+                !preserves_direct_kitty
+                    || placement.image.protocol != crate::pets::ImageProtocol::Kitty
+                    || placement.area.intersection(viewport) != placement.area
+            }) {
+                // iTerm2's file-backed images and Sixel pixels can scroll with history.
+                terminal.clear_frame_images(retained_images)?;
+            }
+
+            // Once insertion starts, an I/O error can leave a prefix on screen. Dequeue
+            // this batch first so retrying the remaining batches cannot duplicate that prefix.
+            let batch = pending_history_lines.remove(/*index*/ 0);
             crate::insert_history::insert_history_hyperlink_lines_with_mode_and_wrap_policy(
                 terminal,
                 &batch.lines,
@@ -1346,6 +1371,54 @@ impl Tui {
             )?;
         }
         Ok(())
+    }
+
+    /// A pager may draw several times while handling an event. Decorate only frames from its owner.
+    pub(crate) fn with_shortcut_hud<T>(
+        &mut self,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
+        render: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let previous = std::mem::replace(&mut self.shortcut_hud, hud);
+        let result = render(self);
+        self.shortcut_hud = previous;
+        result
+    }
+
+    /// On standalone screens, paste, loss of focus and mouse input dismiss pending chords.
+    /// A press on the visible guide belongs to the guide rather than the control beneath it.
+    pub(crate) fn dismiss_shortcut_on_input(
+        &self,
+        event: &TuiEvent,
+        matcher: &mut crate::keymap::KeyChordMatcher,
+    ) -> bool {
+        let covered = match event {
+            TuiEvent::Paste(_) | TuiEvent::FocusLost => false,
+            TuiEvent::Mouse(mouse) if mouse.kind != crossterm::event::MouseEventKind::Moved => {
+                matches!(mouse.kind, crossterm::event::MouseEventKind::Down(_))
+                    && self.shortcut_hud_contains(*mouse)
+            }
+            _ => return false,
+        };
+        if matcher.cancel() {
+            self.frame_requester.schedule_frame();
+            return covered;
+        }
+        false
+    }
+
+    pub(crate) fn shortcut_hud_contains(&self, mouse: crossterm::event::MouseEvent) -> bool {
+        self.shortcut_hud_area
+            .is_some_and(|area| area.contains((mouse.column, mouse.row).into()))
+    }
+
+    pub(crate) fn draw_with_shortcut_hud(
+        &mut self,
+        height: u16,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
+        draw_fn: impl FnOnce(&mut custom_terminal::Frame),
+    ) -> Result<()> {
+        self.with_shortcut_hud(hud, |tui| tui.draw(height, draw_fn))
     }
 
     pub fn draw(
@@ -1417,6 +1490,7 @@ impl Tui {
             Self::flush_pending_history_lines(
                 terminal,
                 &mut self.pending_history_lines,
+                &mut self.retained_images,
                 self.scrollback,
                 screen_size,
             )?;
@@ -1435,7 +1509,10 @@ impl Tui {
                 self.suspend_context.set_cursor_y(inline_area_bottom);
             }
 
-            terminal.draw_with_size(screen_size, &mut self.retained_images, draw_fn)
+            terminal.draw_with_size(screen_size, &mut self.retained_images, |frame| {
+                draw_fn(frame);
+                self.shortcut_hud_area = self.shortcut_hud.as_ref().map(|hud| hud.paint(frame));
+            })
         })??;
         Ok(())
     }
@@ -1503,10 +1580,11 @@ impl Tui {
     /// This is the feature-gated counterpart to `draw`. It intentionally skips
     /// `pending_viewport_area`, whose cursor-position heuristic is part of the legacy path, and
     /// instead lets transcript reflow rebuild scrollback before the frame is rendered.
-    pub fn draw_with_resize_reflow(
+    pub(crate) fn draw_with_resize_reflow(
         &mut self,
         height: u16,
         screen_size: Size,
+        hud: Option<crate::bottom_pane::ShortcutHud>,
         draw_fn: impl FnOnce(&mut custom_terminal::Frame),
     ) -> Result<()> {
         // If we are resuming from ^Z, we need to prepare the resume action now so we can apply it
@@ -1551,6 +1629,7 @@ impl Tui {
             Self::flush_pending_history_lines(
                 terminal,
                 &mut self.pending_history_lines,
+                &mut self.retained_images,
                 self.scrollback,
                 screen_size,
             )?;
@@ -1575,6 +1654,7 @@ impl Tui {
 
             terminal.draw_with_size(screen_size, &mut self.retained_images, |frame| {
                 draw_fn(frame);
+                self.shortcut_hud_area = hud.as_ref().map(|hud| hud.paint(frame));
             })
         })??;
         Ok(())

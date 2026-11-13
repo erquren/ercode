@@ -27,7 +27,7 @@ use crate::context::ManagedDeveloperInstructions;
 use crate::context::ModelInstructions;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
-use crate::context::world_state::IncrementalToolsHint;
+use crate::context::world_state::IncrementalToolsUpdate;
 use crate::init_state_db;
 use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::SessionSettingsUpdate;
@@ -2716,6 +2716,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
 
     let (parent_thread_id, parent_thread) = harness.start_paginated_thread().await;
     let parent_resume_metadata = codex_history::CompactionResumeMetadata {
+        next_item_ordinal: None,
         rejected_audio_file_ids: Default::default(),
         dynamic_tools: None,
         multi_agent_version: Some(MultiAgentVersion::V2),
@@ -3352,7 +3353,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         role: "developer".to_string(),
         tools: Arc::from([serde_json::json!({"type": "function", "name": "compacted_tool"})]),
     };
-    let tools_update = ContextualUserFragment::into(IncrementalToolsHint(
+    let tools_update = ContextualUserFragment::into(IncrementalToolsUpdate(
         codex_prompts::ResolvedIncrementalToolMessages::default().tool_update_hint,
     ));
     let replacement_history = vec![
@@ -3518,7 +3519,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
                         || matches!(item, ResponseItem::Message {
                             internal_chat_message_metadata_passthrough: Some(metadata), ..
                         } if metadata.content_item_kinds.as_ref().is_some_and(|kinds| {
-                            kinds.iter().any(|kind| kind.as_str() == IncrementalToolsHint::KIND)
+                            kinds.iter().any(|kind| kind.as_str() == IncrementalToolsUpdate::KIND)
                         }))
                 })
                 .cloned()
@@ -3882,6 +3883,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                 compaction_response_id: None,
                 latest_token_usage_record: None,
                 resume_metadata: Some(codex_history::CompactionResumeMetadata {
+                    next_item_ordinal: None,
                     rejected_audio_file_ids: Default::default(),
                     dynamic_tools: None,
                     multi_agent_version: Some(MultiAgentVersion::V2),
@@ -3930,7 +3932,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
             })),
         ]);
         rollout_items.push(rollout_response_item(ContextualUserFragment::into(
-            IncrementalToolsHint(
+            IncrementalToolsUpdate(
                 codex_prompts::ResolvedIncrementalToolMessages::default().tool_update_hint,
             ),
         )));
@@ -4002,7 +4004,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
                         if matches!(&envelope.item, ResponseItem::Message {
                             internal_chat_message_metadata_passthrough: Some(metadata), ..
                         } if metadata.content_item_kinds.as_ref().is_some_and(|kinds| {
-                            kinds.iter().any(|kind| kind.as_str() == IncrementalToolsHint::KIND)
+                            kinds.iter().any(|kind| kind.as_str() == IncrementalToolsUpdate::KIND)
                         })) =>
                         Some(envelope.item.clone()),
                     _ => None,
@@ -4018,6 +4020,7 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
         assert_eq!(
             inherited_state,
             Some(codex_history::CompactionResumeMetadata {
+                next_item_ordinal: None,
                 rejected_audio_file_ids: Default::default(),
                 dynamic_tools: None,
                 multi_agent_version: Some(MultiAgentVersion::V2),
@@ -4586,6 +4589,8 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
         .await
         .expect("tester thread should exist");
     let tester_turn = tester_thread.session.new_default_turn().await;
+    let writes = &harness.control.runtime.unconfirmed_results;
+    let before = writes.load(std::sync::atomic::Ordering::Acquire);
     tester_thread
         .session
         .send_event(
@@ -4603,6 +4608,7 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
         )
         .await;
 
+    assert_eq!(writes.load(std::sync::atomic::Ordering::Acquire), before);
     sleep(Duration::from_millis(100)).await;
 
     assert!(
@@ -4634,6 +4640,18 @@ async fn multi_agent_v2_completion_ignores_dead_direct_parent() {
         )
     ));
     assert!(!has_subagent_notification(root_history.raw_items()));
+}
+
+#[test]
+fn terminal_result_writes_require_confirmation_after_the_parent_claims_mail() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::default());
+    let publish = || MessageDelivery::publish(ThreadId::new(), &[], Some(&count)).unwrap();
+    let parent = ThreadId::new();
+    drop(publish().consumed(parent));
+    let saved = publish();
+    saved.consumed(parent).unwrap().confirm();
+    assert!(saved.consumed(parent).is_none());
+    assert_eq!(count.load(std::sync::atomic::Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -5120,6 +5138,11 @@ async fn resume_thread_subagent_restores_stored_metadata() {
         Vec::new()
     );
 
+    assert_eq!(
+        original_snapshot.history_mode,
+        codex_protocol::protocol::ThreadHistoryMode::Legacy
+    );
+    let before_resume = thread_store.calls().await;
     let resumed_thread_id = harness
         .control
         .resume_agent_from_rollout(
@@ -5135,6 +5158,13 @@ async fn resume_thread_subagent_restores_stored_metadata() {
         )
         .await
         .expect("resume should succeed");
+    // Remote stores reject unbounded reads on their metadata API.
+    let after_resume = thread_store.calls().await;
+    assert_eq!(
+        after_resume.read_thread_with_history,
+        before_resume.read_thread_with_history
+    );
+    assert!(after_resume.load_history > before_resume.load_history);
     assert_eq!(resumed_thread_id, child_thread_id);
 
     let resumed_thread = harness

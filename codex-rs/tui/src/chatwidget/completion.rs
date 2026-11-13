@@ -15,7 +15,8 @@ impl ChatWidget {
             &mut self.turn_lifecycle.rendered_completion_turn_ids,
             self.bottom_pane.status_elapsed().filter(|_| live),
             live.then(Local::now),
-        )?;
+        )
+        .filter(|cell| self.local_settings.transcript_mode.is_owned() || cell.has_timing())?;
         Some(if live {
             cell.with_token_rates(self.turn_lifecycle.token_rates.averages())
         } else {

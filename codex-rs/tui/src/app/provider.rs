@@ -14,28 +14,27 @@ use crate::pager_overlay::Overlay;
 use crate::pager_overlay::PagerAction;
 use crate::pager_overlay::StaticOverlay;
 use crate::tui::Tui;
-use codex_app_server_client::TypedRequestError;
-use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ModelProviderListParams;
 use codex_app_server_protocol::ModelProviderListResponse;
 use codex_app_server_protocol::ModelProviderSummary;
 use codex_app_server_protocol::ProviderSettings;
-use codex_app_server_protocol::RequestId;
 use crossterm::event::KeyCode;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 use std::sync::Arc;
 use tokio::sync::watch;
-use uuid::Uuid;
 
 mod editor;
+pub(crate) use editor::Draft;
+pub(crate) use editor::ProviderForm;
 mod fields;
+pub(crate) mod rpc;
 mod write;
 use fields::Field;
 use fields::provider_fields;
 
 const LOADING_VIEW: &str = "model_provider_loading";
 pub(super) const LIST_VIEW: &str = "model_provider_list";
+pub(crate) const CREATE_CUSTOM_PROVIDER: &str = "Create a custom provider or gateway";
 
 #[derive(Debug)]
 pub(crate) enum Event {
@@ -81,6 +80,16 @@ fn back() -> SelectionItem {
     }
 }
 
+pub(crate) fn load_error(title: &str, error: String) -> SelectionViewParams {
+    SelectionViewParams {
+        title: Some(title.into()),
+        subtitle: Some(error),
+        items: vec![back()],
+        allow_input_when_disconnected: true,
+        ..Default::default()
+    }
+}
+
 pub(crate) fn loading() -> (SelectionViewParams, Event) {
     loading_with_notice(/*notice*/ None)
 }
@@ -117,16 +126,12 @@ pub(super) fn handle(app: &mut App, tui: &mut Tui, server: &AppServerSession, ev
             let handle = server.request_handle();
             let offline = app.reconnect.offline;
             tokio::spawn(async move {
-                let request = ClientRequest::ModelProviderList {
-                    request_id: RequestId::String(Uuid::new_v4().to_string()),
-                    params: ModelProviderListParams {},
-                };
                 let result = if offline {
                     Err("Reconnect to the app server to browse model providers.".into())
                 } else {
                     tokio::select! {
                         _ = dismissed.changed() => return,
-                        result = handle.request_typed(request) => result.map_err(request_error),
+                        result = rpc::list_providers(&handle) => result,
                     }
                 };
                 tx.send(AppEvent::Provider(Event::Loaded {
@@ -156,13 +161,7 @@ pub(super) fn handle(app: &mut App, tui: &mut Tui, server: &AppServerSession, ev
                     &app.keymap.list,
                     notice,
                 ),
-                Err(error) => SelectionViewParams {
-                    title: Some("Model providers".into()),
-                    subtitle: Some(error),
-                    items: vec![back()],
-                    allow_input_when_disconnected: true,
-                    ..Default::default()
-                },
+                Err(error) => load_error("Model providers", error),
             };
             chat.replace_selection_view_if_present(LOADING_VIEW, view);
         }
@@ -242,17 +241,18 @@ pub(crate) fn refresh_list_if_present(chat: &mut crate::chatwidget::ChatWidget) 
         .then_some(event)
 }
 
-fn request_error(err: TypedRequestError) -> String {
-    if let TypedRequestError::Server { method, source } = &err
-        && (source.code == -32601
-            || (source.code == -32600
-                && source
-                    .message
-                    .starts_with(&format!("Invalid request: unknown variant `{method}`"))))
-    {
-        return "Update the connected app server to browse model providers.".into();
+pub(crate) fn provider_item(provider: &ModelProviderSummary, default_id: &str) -> SelectionItem {
+    let is_default = provider.id == default_id;
+    SelectionItem {
+        name: provider.name.clone(),
+        name_prefix_spans: vec![if is_default {
+            "● ".green()
+        } else {
+            "○ ".dim()
+        }],
+        description: Some(provider.id.clone()),
+        ..Default::default()
     }
-    format!("Could not load model providers: {err}")
 }
 
 fn list(
@@ -303,14 +303,7 @@ fn list(
             let catalog = Arc::clone(&catalog);
             let dismissed = dismissed.clone();
             SelectionItem {
-                name: provider.name.clone(),
-                name_prefix_spans: vec![if is_default {
-                    "● ".green()
-                } else {
-                    "○ ".dim()
-                }],
                 is_current: current == Some(provider.id.as_str()),
-                description: Some(provider.id.clone()),
                 secondary_action,
                 actions: vec![Box::new(move |tx| {
                     tx.send(AppEvent::Provider(Event::Details {
@@ -319,12 +312,12 @@ fn list(
                         dismissed: dismissed.clone(),
                     }));
                 })],
-                ..Default::default()
+                ..provider_item(provider, &page.default_provider_id)
             }
         })
         .collect();
     items.push(SelectionItem {
-        name: "Add custom provider".into(),
+        name: CREATE_CUSTOM_PROVIDER.into(),
         footer_hint: Some(crate::bottom_pane::popup_consts::picker_hint_line_for_keymap(keymap)),
         actions: vec![Box::new({
             let catalog = Arc::clone(&catalog);

@@ -137,6 +137,7 @@ use codex_skills_extension::validate_required_skills;
 use codex_thread_store::PersistContext;
 use codex_tools::DiscoverableTool;
 use codex_tools::ToolName;
+use codex_tools::ToolSpec;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
 use codex_utils_path_uri::PathUri;
 use codex_utils_stream_parser::AssistantTextChunk;
@@ -155,6 +156,7 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+use uuid::Uuid;
 
 const POST_SAMPLING_TOKEN_ESTIMATE_TARGET: &str = "codex_core::post_sampling_token_estimate";
 
@@ -539,6 +541,7 @@ pub(crate) async fn run_turn(
 
     let mut next_step_context = Some(first_step_context);
     let mut guardian_budget_compacted = false;
+    let mut unfinished_plan_id = None;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -650,6 +653,7 @@ pub(crate) async fn run_turn(
                 Arc::clone(&turn_diff_tracker),
                 &mut client_session,
                 sampling_request_input,
+                &mut unfinished_plan_id,
                 cancellation_token.child_token(),
             )
             .await
@@ -1848,7 +1852,14 @@ pub(crate) fn build_prompt(
     Prompt {
         input,
         tools: if incremental_tools {
-            Arc::default()
+            // Hosted tools still require top-level Responses configuration.
+            step_context
+                .tool_router
+                .model_visible_specs()
+                .iter()
+                .filter(|tool| matches!(tool, ToolSpec::WebSearch { .. }))
+                .cloned()
+                .collect()
         } else {
             step_context.tool_router.model_visible_specs()
         },
@@ -1887,6 +1898,7 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     input: crate::context_manager::ContextManager,
+    unfinished_plan_id: &mut Option<String>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<String>)> {
     let turn_context = Arc::clone(&step_context.turn);
@@ -2008,6 +2020,7 @@ async fn run_sampling_request(
             prompt,
             pending_audio,
             input_item_count,
+            unfinished_plan_id,
             cancellation_token.child_token(),
             &mut draining_for_mailbox,
         )
@@ -2028,7 +2041,9 @@ async fn run_sampling_request(
                     }
                     return Err(err);
                 }
-                CodexErrorDetails::SessionBudgetExceeded | CodexErrorDetails::Fatal(_) => {
+                CodexErrorDetails::SessionBudgetExceeded
+                | CodexErrorDetails::InferenceHookDenied { .. }
+                | CodexErrorDetails::Fatal(_) => {
                     return Err(err);
                 }
                 _ => err,
@@ -2249,12 +2264,16 @@ struct PlanModeStreamState {
 }
 
 impl PlanModeStreamState {
-    fn new(turn_id: &str) -> Self {
+    fn new(unfinished_plan_id: Option<String>) -> Self {
         Self {
             pending_agent_message_items: HashMap::new(),
             started_agent_message_items: HashSet::new(),
             leading_whitespace_by_item: HashMap::new(),
-            plan_item_state: ProposedPlanItemState::new(turn_id),
+            plan_item_state: ProposedPlanItemState {
+                item_id: unfinished_plan_id.unwrap_or_else(|| Uuid::now_v7().to_string()),
+                started: false,
+                completed: false,
+            },
         }
     }
 }
@@ -2310,12 +2329,9 @@ impl AssistantMessageStreamParsers {
 }
 
 impl ProposedPlanItemState {
-    fn new(turn_id: &str) -> Self {
-        Self {
-            item_id: format!("{turn_id}-plan"),
-            started: false,
-            completed: false,
-        }
+    /// Keep the ID across model requests until a completion claims it.
+    fn unfinished_id(self) -> Option<String> {
+        (!self.completed).then_some(self.item_id)
     }
 
     async fn start(&mut self, sess: &Session, turn_context: &TurnContext) {
@@ -2723,6 +2739,7 @@ async fn emit_agent_message_in_plan_mode(
             .remove(&agent_message_id)
             .unwrap_or_else(|| {
                 TurnItem::AgentMessage(codex_protocol::items::AgentMessageItem {
+                    moderation: None,
                     id: agent_message_id.clone(),
                     content: Vec::new(),
                     phase: None,
@@ -2777,6 +2794,7 @@ async fn emit_turn_item_in_plan_mode(
 }
 
 /// Handle a completed assistant response item in plan mode, returning true if handled.
+#[allow(clippy::too_many_arguments)]
 async fn handle_assistant_item_done_in_plan_mode(
     sess: &Session,
     step_context: &StepContext,
@@ -2785,6 +2803,7 @@ async fn handle_assistant_item_done_in_plan_mode(
     state: &mut PlanModeStreamState,
     previously_active_item: Option<&TurnItem>,
     last_agent_message: &mut Option<String>,
+    moderation: Option<&codex_protocol::protocol::TargetedAnswerModeration>,
 ) -> bool {
     let turn_context = &step_context.turn;
     if let ResponseItem::Message { role, .. } = item
@@ -2793,7 +2812,7 @@ async fn handle_assistant_item_done_in_plan_mode(
         maybe_complete_plan_item_from_message(sess, turn_context, state, item).await;
 
         let mut finalized_facts = None;
-        if let Some(finalized_turn_item) = finalize_non_tool_response_item(
+        if let Some(mut finalized_turn_item) = finalize_non_tool_response_item(
             sess,
             TurnItemContributorPolicy::Run(turn_store),
             item,
@@ -2801,6 +2820,10 @@ async fn handle_assistant_item_done_in_plan_mode(
         )
         .await
         {
+            crate::stream_events_utils::apply_answer_moderation(
+                &mut finalized_turn_item.turn_item,
+                moderation,
+            );
             finalized_facts = Some(finalized_turn_item.facts.clone());
             emit_turn_item_in_plan_mode(
                 sess,
@@ -2881,6 +2904,7 @@ async fn try_run_sampling_request(
     prompt: Prompt,
     mut pending_audio: Option<codex_history::AcceptedFileAudio>,
     input_item_count: usize,
+    unfinished_plan_id: &mut Option<String>,
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
@@ -2959,6 +2983,7 @@ async fn try_run_sampling_request(
     }
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let mut response_id_for_assessment = None;
+    let mut answer_moderation: Option<codex_protocol::protocol::TargetedAnswerModeration> = None;
     let mut pending_assessment: Option<codex_api::GuardianAssessment> = None;
     let mut response_completed = false;
     let mut request_token_usage: Option<codex_protocol::protocol::TokenUsage> = None;
@@ -2975,7 +3000,8 @@ async fn try_run_sampling_request(
         None
     };
     let mut resampling = crate::guardian::ResponseResampling::new(&sess);
-    let mut stream_request = async |prompt: &Prompt| {
+    let prompt = Arc::new(prompt);
+    let mut stream_request = async |prompt: &Arc<Prompt>| {
         client_session
             .stream(
                 prompt,
@@ -3041,7 +3067,8 @@ async fn try_run_sampling_request(
         .unwrap_or_else(|| "default".to_string());
     let plan_mode = turn_context.mode() == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
-    let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
+    let mut plan_mode_state =
+        plan_mode.then(|| PlanModeStreamState::new(unfinished_plan_id.clone()));
     let defer_streamed_turn_items_for_contributors =
         !sess.services.extensions.turn_item_contributors().is_empty();
     let mut active_item_is_streaming_to_client = false;
@@ -3141,7 +3168,10 @@ async fn try_run_sampling_request(
                     .await;
                     should_emit_token_count |= incomplete.token_usage.is_some();
                 }
-                if *draining_for_mailbox && matches!(err.details(), CodexErrorDetails::Stream(_)) {
+                if *draining_for_mailbox
+                    && (matches!(err.details(), CodexErrorDetails::Stream(_))
+                        || err.requires_http_fallback())
+                {
                     // Mail already requires a follow-up, even if the producer exited before
                     // receiving the interrupt. Do not retry without that pending input.
                     break Ok(SamplingRequestResult {
@@ -3158,12 +3188,13 @@ async fn try_run_sampling_request(
         let Some(event) = resampling.filter(event, &step_context.tool_router) else {
             continue;
         };
-        sess.services
+        step_context
             .session_telemetry
             .record_responses(&handle_responses, &event);
 
         match event {
             ResponseEvent::Created { response_id } => {
+                answer_moderation = None;
                 response_id_for_assessment.clone_from(&response_id);
                 if let Some(response_id) = response_id {
                     turn_context
@@ -3248,6 +3279,7 @@ async fn try_run_sampling_request(
                         state,
                         previously_streamed_item.as_ref(),
                         &mut last_agent_message,
+                        answer_moderation.as_ref(),
                     )
                     .await
                 {
@@ -3299,14 +3331,18 @@ async fn try_run_sampling_request(
                     | ResponseItem::Other => false,
                 };
 
-                let output_result =
-                    match handle_output_item_done(&mut ctx, item, previously_streamed_item)
-                        .instrument(handle_responses)
-                        .await
-                    {
-                        Ok(output_result) => output_result,
-                        Err(err) => break Err(err),
-                    };
+                let output_result = match handle_output_item_done(
+                    &mut ctx,
+                    item,
+                    previously_streamed_item,
+                    answer_moderation.as_ref(),
+                )
+                .instrument(handle_responses)
+                .await
+                {
+                    Ok(output_result) => output_result,
+                    Err(err) => break Err(err),
+                };
                 if let Some(tool_future) = output_result.tool_future {
                     in_flight.push_back(tool_future);
                 }
@@ -3461,6 +3497,10 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::TurnModerationMetadata(metadata) => {
+                answer_moderation = metadata
+                    .metadata
+                    .get("final_answer_moderation")
+                    .and_then(|marker| serde::Deserialize::deserialize(marker).ok());
                 sess.emit_turn_moderation_metadata(&turn_context, metadata)
                     .await;
             }
@@ -3502,6 +3542,7 @@ async fn try_run_sampling_request(
                 response_id,
                 token_usage,
                 usage_metadata,
+                reasoning_removals: _,
                 end_turn,
             } => {
                 let request_duration_ms =
@@ -3765,6 +3806,9 @@ async fn try_run_sampling_request(
         &mut assistant_message_stream_parsers,
     )
     .await;
+    if let Some(state) = plan_mode_state {
+        *unfinished_plan_id = state.plan_item_state.unfinished_id();
+    }
 
     if !in_flight.is_empty() {
         let _tool_blocking_timing_guard = turn_context

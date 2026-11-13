@@ -43,6 +43,9 @@ pub(super) async fn reconnect(
     task_tools: ThreadToolTransport,
     presentation: ReconnectPresentation,
 ) -> Result<Reconnected> {
+    if matches!(target, AppServerTarget::Cloud) {
+        color_eyre::eyre::bail!("Reopen Codex to reconnect the cloud backend.");
+    }
     let mode = target.thread_params_mode();
     if matches!(target, AppServerTarget::Embedded) {
         color_eyre::eyre::bail!("in-process sessions have no connection to restore");
@@ -135,7 +138,7 @@ pub(super) async fn reconnect(
         }
     }
     tracing::warn!(stage, "automatic reconnect timed out");
-    color_eyre::eyre::bail!("Automatic reconnect timed out while {stage}.")
+    color_eyre::eyre::bail!("Automatic reconnect timed out while {stage}.");
 }
 
 impl App {
@@ -230,10 +233,19 @@ impl App {
                 owner.reset_realtime_conversation();
             }
             self.retire_background_voice();
+            self.saved_openings.abandon();
+            if let Some(pane) = self.sidebars.get_mut(&self.sidebar_parent()) {
+                pane.opening = None;
+            }
             self.reconnect.offline = true;
             self.account_email_request_id = None;
             // Cached blank sessions are usable only while this connection owns a subscription.
-            self.agents_overview.blank_sessions.clear();
+            self.agents_overview.blank_sessions.retain(|id, _| {
+                self.backend_registry
+                    .owner(*id)
+                    .zip(self.app_server_backend_id)
+                    .is_some_and(|(owner, reconnecting)| owner != reconnecting)
+            });
             self.reconnect.failed = false;
             if self.pending_server_version_notice.take().is_some() {
                 self.reconnect.seen_version_notice = None;
@@ -249,7 +261,11 @@ impl App {
             if let Some(task) = self.agents_overview.refresh_task.take() {
                 task.abort();
             }
-            self.agents_overview.request_id = None;
+            self.agents_overview.active_refresh = None;
+            if let Some(owner) = self.app_server_backend_id {
+                self.agents_overview
+                    .invalidate_discovery(owner, /*displayed*/ true);
+            }
             self.agents_overview.refresh_show_more = false;
             self.agents_overview.active_refresh_thread_ids.clear();
             self.agents_overview.refresh_pending = false;
@@ -311,6 +327,8 @@ impl App {
         search_dir: PathBuf,
     ) {
         self.chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
+        self.chat_widget.thread_settings_owner = app_server.thread_params_mode().settings_owner();
+        self.chat_widget.pending_cloud_turn_settings = app_server.pending_cloud_turn_settings();
         self.chat_widget.set_local_worktree_operations(
             !crate::uses_remote_workspace_or_environment(
                 &self.app_server_target,
@@ -365,6 +383,7 @@ impl App {
         // prevents their late completions from submitting follow-up operations on the new one.
         let (tx, rx) = mpsc::unbounded_channel();
         self.app_event_tx = AppEventSender::new(tx);
+        self.app_server_backend_id = Some(session.backend_id());
         *app_event_rx = rx;
         // The old timer targets the discarded channel, so a new preview can be scheduled.
         self.config_notification_test_pending = None;
@@ -375,6 +394,7 @@ impl App {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.connection_notice = None;
+            state.restart_history_search();
             if state.creating_worktree {
                 state.creating_worktree = false;
                 self.pending_managed_worktree_creation = false;
@@ -437,7 +457,7 @@ impl App {
             cancellation.cancel();
         }
         self.agents_overview.dispatched_requests.clear();
-        self.agents_overview.request_id = None;
+        self.agents_overview.active_refresh = None;
         self.agents_overview.refresh_show_more = false;
         self.agents_overview.active_refresh_thread_ids.clear();
         self.agents_overview.refresh_pending = false;
@@ -465,6 +485,9 @@ impl App {
             store.pending_interactive_replay = Default::default();
             store.pending_interrupt_turn_id = None;
             store.active = false;
+            if let Some(session) = &mut store.session {
+                session.read_only_history = true;
+            }
             store
                 .buffer
                 .retain(|event| matches!(event, ThreadBufferedEvent::Notification(_)));
@@ -552,7 +575,9 @@ impl App {
         self.refresh_pending_thread_approvals().await;
         // Discover tasks whose notifications were missed, without clearing retained rows.
         // A hidden overview performs this discovery when it is next opened.
-        self.agents_overview.initialized = false;
+        self.agents_overview
+            .initialized
+            .remove(&app_server.backend_id());
         if self.reconnect.presentation == ReconnectPresentation::Overview {
             let threads = self
                 .agents_overview

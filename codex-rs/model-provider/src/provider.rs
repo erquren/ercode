@@ -11,6 +11,8 @@ use codex_api::SharedAuthProvider;
 use codex_api::TransportError;
 use codex_features::RuntimeAuthMode;
 use codex_login::AuthManager;
+use codex_login::AuthManagerConfig;
+use codex_login::AuthManagerInitializationError;
 use codex_login::CodexAuth;
 use codex_login::WorkspaceRoutingRequest;
 use codex_login::default_client::ClientRedirectPolicy;
@@ -444,6 +446,16 @@ pub fn create_model_provider(
     create_model_provider_with_runtime(provider_info, auth_manager, /*runtime_auth*/ None)
 }
 
+/// Creates a model provider using the local login settings.
+pub async fn create_model_provider_from_local_config(
+    provider_info: ModelProviderInfo,
+    config: &impl AuthManagerConfig,
+) -> Result<SharedModelProvider, AuthManagerInitializationError> {
+    let credentials =
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
+    Ok(create_model_provider(provider_info, Some(credentials)))
+}
+
 pub(crate) fn create_model_provider_with_runtime(
     provider_info: ModelProviderInfo,
     auth_manager: Option<Arc<AuthManager>>,
@@ -529,6 +541,21 @@ impl ConfiguredModelProvider {
 }
 
 impl ModelProvider for ConfiguredModelProvider {
+    fn is_recoverable_auth_error(&self, error: &TransportError) -> bool {
+        let TransportError::Http { status, body, .. } = error else {
+            return false;
+        };
+        *status == http::StatusCode::UNAUTHORIZED
+            && (self.runtime_auth.is_none()
+                || !codex_protocol::error::is_runtime_auth_denial(
+                    *status,
+                    body.as_deref().unwrap_or_default(),
+                    codex_response_debug_context::extract_response_debug_context(error)
+                        .auth_error_code
+                        .as_deref(),
+                ))
+    }
+
     fn info(&self) -> &ModelProviderInfo {
         &self.info
     }
@@ -559,6 +586,17 @@ impl ModelProvider for ConfiguredModelProvider {
             .clone()
             .transpose()
             .map_err(std::io::Error::other)
+    }
+
+    fn recover_from_unauthorized(
+        &self,
+    ) -> ModelProviderFuture<'_, codex_protocol::error::Result<ProviderUnauthorizedRecovery>> {
+        Box::pin(async {
+            let Some(gateway) = self.gateway_auth_manager()? else {
+                return Ok(ProviderUnauthorizedRecovery::NotConfigured);
+            };
+            Ok(gateway.prepare_retry().await)
+        })
     }
 
     fn supports_attestation(&self) -> bool {

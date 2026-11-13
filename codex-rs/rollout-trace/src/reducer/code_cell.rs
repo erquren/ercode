@@ -492,7 +492,7 @@ impl TraceReducer {
         let Some(request_payload) = request_payload else {
             return Ok(());
         };
-        let payload = self.read_payload_json(request_payload)?;
+        let payload = self.payload_reader.read_json(request_payload)?;
         if payload.get("tool_name").and_then(Value::as_str) != Some("wait") {
             return Ok(());
         }
@@ -558,35 +558,6 @@ impl TraceReducer {
             return Ok(());
         }
         self.add_code_cell_output_item(&code_cell_id, item_id)
-    }
-
-    /// Resolves the owning thread for a code-cell runtime event.
-    ///
-    /// Runtime events should carry a thread id, but older/raw paths may only have
-    /// the turn id. The fallback keeps replay strict while avoiding duplicate logic
-    /// in every code-cell event arm.
-    pub(super) fn code_cell_event_thread_id(
-        &self,
-        thread_id: Option<String>,
-        codex_turn_id: Option<&str>,
-        runtime_cell_id: &str,
-        event_name: &str,
-    ) -> Result<String> {
-        if let Some(thread_id) = thread_id {
-            return Ok(thread_id);
-        }
-        let Some(codex_turn_id) = codex_turn_id else {
-            bail!("{event_name} {runtime_cell_id} did not include a thread id");
-        };
-        self.rollout
-            .codex_turns
-            .get(codex_turn_id)
-            .map(|turn| turn.thread_id.clone())
-            .with_context(|| {
-                format!(
-                    "{event_name} {runtime_cell_id} referenced unknown Codex turn {codex_turn_id}"
-                )
-            })
     }
 
     /// Derives the stable reduced code-cell id from the model-visible exec call id.

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::ProviderUnauthorizedRecovery;
 use crate::gateway_export::GatewayExport;
 use codex_login::AuthManager;
 use codex_login::GatewayAuthError;
@@ -46,12 +47,31 @@ impl GatewayAuthManager {
         Ok(Self(source))
     }
 
+    pub(crate) async fn prepare_retry(&self) -> ProviderUnauthorizedRecovery {
+        match &self.0 {
+            GatewayCredentialSource::Export(export) => {
+                export.invalidate().await;
+                ProviderUnauthorizedRecovery::Recovered
+            }
+            GatewayCredentialSource::OAuth(_) => ProviderUnauthorizedRecovery::NotConfigured,
+        }
+    }
+
     /// The session used for explicit sign-in and OAuth status, when configured.
     pub fn oauth_session(&self) -> Option<Arc<OAuthSessionManager>> {
         match &self.0 {
             GatewayCredentialSource::OAuth(session) => Some(Arc::clone(session)),
             GatewayCredentialSource::Export(_) => None,
         }
+    }
+
+    pub(crate) fn without_interactive_login(self: &Arc<Self>) -> Arc<Self> {
+        let GatewayCredentialSource::OAuth(session) = &self.0 else {
+            return Arc::clone(self);
+        };
+        Arc::new(Self(GatewayCredentialSource::OAuth(Arc::new(
+            session.as_ref().clone().without_interactive_login(),
+        ))))
     }
 
     pub async fn resolve_access_token(&self) -> Result<Arc<str>> {

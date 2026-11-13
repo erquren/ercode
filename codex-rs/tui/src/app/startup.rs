@@ -16,6 +16,7 @@ use crate::session_start::SessionStartOutcome;
 use crate::session_start::cancel_session_start;
 use crate::session_start::complete_session_start;
 use crate::unarchive_prompt::run_unarchive_prompt;
+use color_eyre::eyre::ContextCompat;
 
 fn spawn_startup_thread_start(
     app_server: &AppServerSession,
@@ -61,13 +62,13 @@ pub(super) async fn prepare_fresh_startup_config(
 ) -> Result<crate::projectless::AppliedDefaults> {
     let defaults_cwd = match app_server_target {
         AppServerTarget::Embedded | AppServerTarget::LocalDaemon { .. } => config.cwd.as_path(),
-        AppServerTarget::Remote { .. } => {
+        AppServerTarget::Remote { .. } | AppServerTarget::Cloud => {
             app_server.remote_cwd_override().unwrap_or(Path::new("."))
         }
     };
     let defaults = crate::config_update::read_effective_config_with_layers(
-        app_server.request_handle(),
-        defaults_cwd,
+        &app_server.request_handle(),
+        defaults_cwd.display().to_string(),
     )
     .await?;
     super::new_session::overlay_new_session_defaults(
@@ -96,22 +97,26 @@ pub(super) fn startup_model(
     config: &Config,
     bootstrap: &AppServerBootstrap,
     server_defaults_read: bool,
-) -> String {
-    config.model.clone().unwrap_or_else(|| {
-        if server_defaults_read {
-            // Legacy bootstrap paths may be seeded with local config, which can differ from a
-            // cleared server model. Use the server catalog when config/read returned model: null.
-            bootstrap
-                .available_models
-                .iter()
-                .find(|model| model.is_default)
-                .or_else(|| bootstrap.available_models.first())
-                .map(|model| model.model.clone())
-                .unwrap_or_else(|| bootstrap.default_model.clone())
-        } else {
-            bootstrap.default_model.clone()
-        }
-    })
+) -> Result<String> {
+    config
+        .model
+        .clone()
+        .or_else(|| {
+            if server_defaults_read {
+                // Legacy bootstrap paths may be seeded with local config, which can differ from a
+                // cleared server model. Use the server catalog when config/read returned model: null.
+                bootstrap
+                    .available_models
+                    .iter()
+                    .find(|model| model.is_default)
+                    .or_else(|| bootstrap.available_models.first())
+                    .map(|model| model.model.clone())
+                    .or_else(|| bootstrap.default_model.clone())
+            } else {
+                bootstrap.default_model.clone()
+            }
+        })
+        .wrap_err("The initial app-server connection did not provide a startup model.")
 }
 
 impl App {
@@ -154,7 +159,7 @@ impl App {
         self.pending_thread_switch_resets != 0 && self.side_retention_enabled(tui)
     }
 
-    /// Drain a side pair's queued prompts and transcript updates before a key can switch focus.
+    /// Apply queued app events before input can cross a backend or side-chat switch.
     pub(super) fn can_read_terminal_after_thread_switch(
         &self,
         tui: &tui::Tui,
@@ -162,7 +167,8 @@ impl App {
     ) -> bool {
         self.pending_thread_switch_resets == 0
             && (app_event_rx.is_empty()
-                || (!self.side_retention_enabled(tui)
+                || (!self.config.features.enabled(Feature::TuiMultiBackend)
+                    && !self.side_retention_enabled(tui)
                     && self
                         .current_displayed_thread_id()
                         .and_then(|id| self.side_pair_key(id))
@@ -299,7 +305,7 @@ impl App {
             exit_info
         }
 
-        let (mut app_server, mut other_backends) = initial_backends.into_parts();
+        let (mut app_server, mut other_backends, backend_settings) = initial_backends.into_parts();
         // Preserve singleton error propagation while releasing all sessions on multi-backend exits.
         macro_rules! startup_try {
             ($result:expr) => {
@@ -447,7 +453,7 @@ impl App {
                 &harness_overrides,
             );
         }
-        let mut model = startup_model(&config, &bootstrap, fresh_start);
+        let mut model = startup_try!(startup_model(&config, &bootstrap, fresh_start));
         let available_models = bootstrap.available_models;
         let mut remote_connection =
             crate::status::remote_connection::remote_connection_status_value(
@@ -930,6 +936,8 @@ impl App {
         }
         chat_widget.remote_connection = remote_connection;
         chat_widget.snapshot_local_images = app_server_target.uses_remote_workspace();
+        chat_widget.thread_settings_owner = app_server.thread_params_mode().settings_owner();
+        chat_widget.pending_cloud_turn_settings = app_server.pending_cloud_turn_settings();
         chat_widget.set_local_worktree_operations(!crate::uses_remote_workspace_or_environment(
             &app_server_target,
             environment_manager.as_ref(),
@@ -1034,6 +1042,7 @@ See the Codex keymap documentation for supported actions and examples."
             feedback_audience,
             environment_manager,
             app_server_target,
+            app_server_backend_id: Some(app_server.backend_id()),
             pending_right_click_paste: None,
             right_click_paste_environment: super::right_click_paste::PasteEnvironment::detect(),
             reconnect: ReconnectState {
@@ -1061,8 +1070,10 @@ See the Codex keymap documentation for supported actions and examples."
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
+            backend_registry: Default::default(),
             agents_overview,
             side_threads: HashMap::new(),
+            saved_openings: Default::default(),
             sidebars: HashMap::new(),
             side_companions: HashMap::new(),
             zoomed_thread: None,
@@ -1130,6 +1141,10 @@ See the Codex keymap documentation for supported actions and examples."
                 /*server_version*/ None,
             );
         }
+        if let Some(thread_id) = app.current_displayed_thread_id() {
+            app.backend_registry
+                .observe(app_server.backend_id(), thread_id);
+        }
         if start_in_agents_overview {
             app.open_agents_overview(&app_server);
         } else {
@@ -1165,6 +1180,7 @@ See the Codex keymap documentation for supported actions and examples."
                     return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
                 }
             }
+            app.remember_attached_host_project(&app_server);
             if let Some(error) = provider_error {
                 app.chat_widget
                     .show_provider_error(error, /*rejected_message_id*/ None);
@@ -1310,6 +1326,12 @@ See the Codex keymap documentation for supported actions and examples."
         ) {
             backends.set_preference_key(backends.displayed_owner(), "local");
         }
+        for (&owner, settings) in &backend_settings {
+            if settings.target == AppServerTarget::Cloud {
+                backends.set_preference_key(owner, "cloud");
+            }
+        }
+        backends.settings = backend_settings;
 
         let mut parked_side_completions = HashMap::<_, Vec<AppEvent>>::new();
         let exit_reason_result = if let Some(exit_reason) = pre_loop_exit_reason {
@@ -1330,7 +1352,8 @@ See the Codex keymap documentation for supported actions and examples."
                 } else {
                     None
                 };
-                let current_label = next_backend.and_then(|_| backends.displayed_name());
+                let current_label =
+                    next_backend.and_then(|_| backends.displayed_name(&app.app_server_target));
                 app.chat_widget.set_new_backend_control(current_label);
                 if !backends.is_listening(displayed_owner)
                     && !app.pending_startup_thread_start
@@ -1484,7 +1507,7 @@ See the Codex keymap documentation for supported actions and examples."
                         }
                         AppRunControl::Continue
                     }
-                    Some(event) = app_event_rx.recv() => {
+                    Some(event) = app.saved_openings.next_event(&mut app_event_rx) => {
                         let switch_backend = match &event {
                             AppEvent::ChooseNewSessionCheckout { name } | AppEvent::NewSession { name }
                                 if multi_backend => app.other_new_session_backend(&backends).await
@@ -1518,7 +1541,8 @@ See the Codex keymap documentation for supported actions and examples."
                                 parked_side_completions.entry(*backend_id).or_default().push(event);
                                 continue;
                             }
-                            AppEvent::StartupThreadStarted { backend_id, .. } => {
+                            AppEvent::SavedSideChatsLoaded { backend_id, .. }
+                            | AppEvent::StartupThreadStarted { backend_id, .. } => {
                                 backends.slot(*backend_id).unwrap_or(displayed_session)
                             }
                             _ => displayed_session,
@@ -1603,12 +1627,15 @@ See the Codex keymap documentation for supported actions and examples."
                                 backends.defer_side_startup(event);
                             }
                             Some(event) if owner != displayed_owner || !app.reconnect.offline => {
-                                if let Some(session) = backends.session(owner) {
-                                    app.handle_polled_backend_event(session, displayed_owner, event).await;
+                                if let Some(slot) = backends.slot(owner) {
+                                    let (session, parked_inputs) = backends.session_and_parked_inputs(slot);
+                                    app.handle_polled_backend_event(session, displayed_owner, parked_inputs, event).await;
                                 }
                             }
                             Some(_) => {}
                             None => {
+                                app.agents_overview
+                                    .invalidate_discovery(owner, owner == displayed_owner);
                                 if owner == displayed_owner {
                                     if app.reconnect.offline && app.pending_startup_thread_start {
                                         reconnect = None;

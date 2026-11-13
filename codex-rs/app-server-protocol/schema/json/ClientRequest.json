@@ -1613,10 +1613,34 @@
           "type": "object"
         },
         {
-          "properties": {
-            "audio_url": {
-              "type": "string"
+          "anyOf": [
+            {
+              "properties": {
+                "audio_url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "audio_url"
+              ],
+              "title": "AudioUrlFunctionCallOutputContentItem",
+              "type": "object"
             },
+            {
+              "properties": {
+                "file_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file_id"
+              ],
+              "title": "FileIdFunctionCallOutputContentItem",
+              "type": "object"
+            }
+          ],
+          "description": "Inline audio data or an uploaded file loaded by the Responses API.",
+          "properties": {
             "type": {
               "enum": [
                 "input_audio"
@@ -1626,7 +1650,6 @@
             }
           },
           "required": [
-            "audio_url",
             "type"
           ],
           "title": "InputAudioFunctionCallOutputContentItem",
@@ -1676,6 +1699,36 @@
         "query",
         "roots"
       ],
+      "type": "object"
+    },
+    "GatewayOAuthLoginParams": {
+      "description": "Authorize a configured provider without changing the default or any thread's provider.",
+      "properties": {
+        "deviceAuth": {
+          "description": "Select device authorization when the server advertises support for it.",
+          "type": "boolean"
+        },
+        "modelProvider": {
+          "description": "Defaults to the current provider when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GatewayOAuthReadParams": {
+      "description": "Read credential readiness for a configured provider without starting browser login.",
+      "properties": {
+        "modelProvider": {
+          "description": "Defaults to the current provider when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
       "type": "object"
     },
     "GcpProviderId": {
@@ -1859,6 +1912,13 @@
             }
           ],
           "description": "Controls how much MCP inventory data to fetch for each server. Defaults to `Full` when omitted."
+        },
+        "environmentId": {
+          "description": "Select this environment's registration. Requires `serverName` and `threadId`. When omitted, a named request uses the same server as older clients.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "limit": {
           "description": "Optional page size; defaults to a server-defined value.",
@@ -2187,6 +2247,13 @@
             "null"
           ]
         },
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "originCallId": {
           "description": "Originating MCP tool call used to select the resource's app.",
           "type": [
@@ -2275,6 +2342,13 @@
           ],
           "description": "Registration strategy for this login only; omission selects automatic discovery."
         },
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -2317,6 +2391,13 @@
       "properties": {
         "_meta": true,
         "arguments": true,
+        "environmentId": {
+          "description": "Exact registration scope; omission preserves legacy name-only selection.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "server": {
           "type": "string"
         },
@@ -8185,7 +8266,14 @@
           "type": "string"
         },
         "params": {
-          "type": "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GatewayOAuthReadParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -8208,7 +8296,14 @@
           "type": "string"
         },
         "params": {
-          "type": "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GatewayOAuthLoginParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -8620,6 +8715,29 @@
         "method"
       ],
       "title": "Account/logoutRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/securitySetup/read"
+          ],
+          "title": "Account/securitySetup/readRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "type": "null"
+        }
+      },
+      "required": [
+        "id",
+        "method"
+      ],
+      "title": "Account/securitySetup/readRequest",
       "type": "object"
     },
     {

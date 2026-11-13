@@ -5,7 +5,7 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
-use crate::bottom_pane::status_line_content::StatusLineRenderer;
+use crate::bottom_pane::status_line_from_segments;
 use crate::branch_summary;
 use crate::chatwidget::limit_label_for_window;
 use crate::chatwidget::rate_limits::get_limits_duration;
@@ -217,25 +217,13 @@ impl ChatWidget {
             }
         }
 
-        let content = self.status_line_renderer().content(
+        let line = status_line_from_segments(
             segments,
             self.local_settings.tui.status_line_use_colors,
             self.thread_id,
             self.status_line_pull_request_url(),
         );
-        self.set_status_line(content);
-    }
-
-    pub(super) fn status_line_renderer(&self) -> StatusLineRenderer {
-        if self
-            .config
-            .features
-            .enabled(Feature::TuiExtensionsStatusLine)
-        {
-            StatusLineRenderer::Extension
-        } else {
-            StatusLineRenderer::Native
-        }
+        self.set_status_line(line.map(Into::into));
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -338,7 +326,6 @@ impl ChatWidget {
             ProgramStatus::Blocked(kind)
         } else if self.bottom_pane.is_task_running()
             || self.is_user_turn_pending_or_running()
-            || !self.unified_exec_processes.is_empty()
             || (self.status_state.program_status_after_turn == ProgramStatus::Done
                 && self
                     .current_goal_status
@@ -479,6 +466,9 @@ impl ChatWidget {
     ///
     /// Unknown ids are deduplicated in insertion order for warning messages.
     fn status_line_items_with_invalids(&self) -> (Vec<StatusLineItem>, Vec<String>) {
+        if self.read_only_history {
+            return Default::default();
+        }
         parse_items_with_invalids(self.configured_status_line_items())
     }
 
@@ -737,7 +727,10 @@ impl ChatWidget {
     pub(super) fn status_line_value_for_item(&mut self, item: StatusLineItem) -> Option<String> {
         match item {
             StatusLineItem::ModelName => Some(self.model_display_name().to_string()),
-            StatusLineItem::ModelWithReasoning => Some(self.model_with_reasoning_display_name()),
+            StatusLineItem::ModelWithReasoning => {
+                let service_tier = self.processing_tier_display_name().map(str::to_lowercase);
+                Some(self.model_with_reasoning_display_name(service_tier.as_deref()))
+            }
             StatusLineItem::Reasoning => Some(self.reasoning_display_name()),
             StatusLineItem::Profile => {
                 let layer = self.config.config_layer_stack.get_active_user_layer()?;
@@ -984,7 +977,7 @@ impl ChatWidget {
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::ModelWithReasoning => Some(Self::truncate_terminal_title_part(
-                self.model_with_reasoning_display_name(),
+                self.model_with_reasoning_display_name(self.processing_tier_display_name()),
                 /*max_chars*/ 32,
             )),
             TerminalTitleItem::Reasoning => Some(Self::truncate_terminal_title_part(
@@ -1000,10 +993,9 @@ impl ChatWidget {
         Self::status_line_reasoning_effort_label(effort.as_ref())
     }
 
-    fn model_with_reasoning_display_name(&self) -> String {
+    fn model_with_reasoning_display_name(&self, service_tier: Option<&str>) -> String {
         let label = self.reasoning_display_name();
-        let service_tier_label = self
-            .processing_tier_display_name()
+        let service_tier_label = service_tier
             .map(|tier| format!(" {tier}"))
             .unwrap_or_default();
         format!("{} {label}{service_tier_label}", self.model_display_name())
@@ -1014,7 +1006,7 @@ impl ChatWidget {
         self.model_catalog
             .models
             .iter()
-            .find(|preset| preset.model == self.current_model())
+            .find(|preset| preset.model == self.service_tier_model())
             .and_then(|preset| preset.service_tiers.iter().find(|tier| tier.id == id))
             .map(|tier| tier.name.as_str())
             .or_else(|| {

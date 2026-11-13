@@ -14,3 +14,24 @@ $:
       stages:
         - name: 查看环境信息
           script: uname -a && cat /etc/os-release
+
+"0.169.0":
+  tag_push:
+    - runner:
+        cpus: 32
+      docker:
+        image: docker.cnb.cool/erquren_pub/env/ubt2404
+      stages:
+        - name: 构建并校验 Linux x86_64 MUSL 发布包
+          script: bash scripts/release/build_cnb_linux.sh
+        - name: 创建版本发布
+          type: git:release
+          options:
+            title: er 0.169.0
+            description: Linux x86_64 MUSL 发布包与 SHA-256 校验文件
+        - name: 上传 Linux 发布包
+          image: cnbcool/attachments:latest
+          settings:
+            attachments:
+              - ./dist/er-0.169.0-linux-x86_64-musl.tar.gz
+              - ./dist/er-0.169.0-linux-x86_64-musl.tar.gz.sha256

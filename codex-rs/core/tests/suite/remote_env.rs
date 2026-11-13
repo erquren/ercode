@@ -720,10 +720,7 @@ async fn environment_permissions_follow_configuration_ownership() -> Result<()> 
             turn_context.permission_profile,
             turn_context.active_permission_profile
         ),
-        (
-            Some(PermissionProfile::read_only()),
-            Some(owner_active_profile)
-        )
+        (PermissionProfile::read_only(), Some(owner_active_profile))
     );
 
     Ok(())
@@ -821,7 +818,7 @@ async fn executor_profile_roots_survive_settings_restore_and_turn_recording() ->
             context.permission_profile,
             context.active_permission_profile,
         ),
-        (Some(expected_profile), Some(active_profile))
+        (expected_profile, Some(active_profile))
     );
     Ok(())
 }
@@ -921,6 +918,15 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
     )
     .await;
     let mut builder = test_codex().with_config(|config| {
+        config
+            .permissions
+            .set_permission_profile(PermissionProfile::workspace_write_with(
+                &[],
+                NetworkSandboxPolicy::Restricted,
+                /*exclude_tmpdir_env_var*/ true,
+                /*exclude_slash_tmp*/ true,
+            ))
+            .expect("workspace permissions");
         assert!(config.features.enable(Feature::DeferredExecutor).is_ok());
         assert!(
             config
@@ -986,6 +992,16 @@ async fn settings_update_does_not_retarget_active_turn_environment() -> Result<(
     );
     assert_eq!(snapshot.cwd(), &next_cwd);
     assert_eq!(snapshot.workspace_roots, vec![next_cwd.clone()]);
+    let policy = snapshot.permission_profile.file_system_sandbox_policy();
+    assert_eq!(
+        [
+            next_cwd.join("ordinary.txt"),
+            next_cwd.join(".git/config"),
+            initial_cwd.join("ordinary.txt"),
+        ]
+        .map(|path| policy.can_write_local_path_with_cwd(path.as_path(), next_cwd.as_path())),
+        [true, false, false],
+    );
     test.codex
         .submit(Op::UserInputAnswer {
             id: request.turn_id,

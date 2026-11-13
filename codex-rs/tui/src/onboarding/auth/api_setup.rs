@@ -360,7 +360,7 @@ impl AuthModeWidget {
         true
     }
 
-    pub(super) fn start_api_key_entry(&mut self) {
+    pub(in crate::onboarding) fn start_api_key_entry(&mut self) {
         if !self.is_api_login_allowed() {
             self.disallow_api_login();
             return;

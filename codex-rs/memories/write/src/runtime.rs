@@ -145,21 +145,12 @@ impl MemoryStartupContext {
 
     pub(crate) fn new(
         thread_manager: Arc<ThreadManager>,
-        auth_manager: Arc<AuthManager>,
+        auth: Arc<ProviderAuthContext>,
         thread_id: ThreadId,
         thread: Arc<CodexThread>,
         config: &Config,
         source: SessionSource,
     ) -> Self {
-        let auth = thread
-            .thread_extension_data()
-            .get::<ProviderAuthContext>()
-            .unwrap_or_else(|| {
-                Arc::new(ProviderAuthContext {
-                    credentials: auth_manager,
-                    runtime_auth: None,
-                })
-            });
         let provider = auth.model_provider(config.model_provider.clone());
         Self::new_with_provider(
             thread_manager,
@@ -328,7 +319,7 @@ impl MemoryStartupContext {
     pub(crate) async fn stream_stage_one_prompt(
         &self,
         config: &Config,
-        prompt: &Prompt,
+        prompt: Prompt,
         context: &StageOneRequestContext,
     ) -> anyhow::Result<(String, Option<TokenUsage>)> {
         let installation_id = resolve_installation_id(&config.codex_home).await?;
@@ -373,7 +364,7 @@ impl MemoryStartupContext {
         .await;
         let mut stream = client_session
             .stream(
-                prompt,
+                &Arc::new(prompt),
                 &context.model_info,
                 &context.session_telemetry,
                 context.reasoning_effort.clone(),

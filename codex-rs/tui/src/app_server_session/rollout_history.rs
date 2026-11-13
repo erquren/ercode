@@ -76,7 +76,7 @@ impl AppServerSession {
                 "Showing up to 100 recent prompts and final replies. Intermediate messages and tool activity are unavailable.",
             );
         }
-        let session = thread_session_state_from_thread_response(
+        let mut session = thread_session_state_from_thread_response(
             &thread.id,
             crate::windows_sandbox::host_from_environments(thread.environments.as_deref()),
             thread.forked_from_id.clone(),
@@ -97,6 +97,7 @@ impl AppServerSession {
         )
         .await
         .map_err(color_eyre::eyre::Report::msg)?;
+        session.read_only_history = true;
         self.freeze_viewed_receipt(thread_id);
         Ok((
             AppServerStartedThread {
@@ -158,11 +159,15 @@ impl AppServerSession {
         permission_overrides: crate::resume_permissions::ResumePermissions,
     ) -> Result<AppServerStartedThread> {
         if self.thread_params_mode().settings_owner() == ThreadSettingsOwner::Client {
-            self.thread_tool_transport().validate_config(&config)?;
+            self.thread_tool_transport()
+                .check_namespace(&self.request_handle, &config.cwd)
+                .await?;
         }
         let session_config = if matches!(
             model_settings,
-            ResumeModelSettings::RestoreFromThread | ResumeModelSettings::PreserveExistingThread
+            ResumeModelSettings::RestoreFromThread
+                | ResumeModelSettings::PreserveExistingThread
+                | ResumeModelSettings::PreserveSideConversation
         ) {
             config.clone()
         } else {
@@ -244,6 +249,9 @@ impl AppServerSession {
                 ));
             }
         };
+        if let Some(subscribed) = &mut self.attachment_subscribed {
+            *subscribed = true;
+        }
         self.hydrate_initial_thread_history(
             &mut response.thread,
             response.turns_backwards_cursor.clone(),

@@ -1404,6 +1404,7 @@ fn config_toml_deserializes_model_availability_nux() {
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: true,
+            collapse_turn_details: false,
             sidebar_width_percent: None,
             mouse_scroll_speed: None,
             copy_on_select: Default::default(),
@@ -1411,6 +1412,7 @@ fn config_toml_deserializes_model_availability_nux() {
             right_click_paste: Default::default(),
             alternate_screen: AltScreenMode::default(),
             status_line: None,
+            status_line_provider: None,
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
@@ -2233,6 +2235,7 @@ respect_system_proxy = true
     let disabled = Sourced::new(
         FeatureRequirementsToml {
             entries: BTreeMap::from([("respect_system_proxy".to_string(), false)]),
+            ..Default::default()
         },
         RequirementSource::Unknown,
     );
@@ -2255,6 +2258,7 @@ respect_system_proxy = true
     let enabled = Sourced::new(
         FeatureRequirementsToml {
             entries: BTreeMap::from([("respect_system_proxy".to_string(), true)]),
+            ..Default::default()
         },
         RequirementSource::Unknown,
     );
@@ -2356,6 +2360,7 @@ async fn system_proxy_fallback_honors_feature_requirements() -> std::io::Result<
         let requirements = Sourced::new(
             FeatureRequirementsToml {
                 entries: BTreeMap::from([("system_proxy_fallback".to_string(), required)]),
+                ..Default::default()
             },
             RequirementSource::Unknown,
         );
@@ -4769,6 +4774,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: true,
+            collapse_turn_details: false,
             sidebar_width_percent: None,
             mouse_scroll_speed: None,
             copy_on_select: Default::default(),
@@ -4776,6 +4782,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             right_click_paste: Default::default(),
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
+            status_line_provider: None,
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
@@ -6118,9 +6125,12 @@ async fn rebuild_with_session_layers_refreshes_plugin_derived_mcp_config() -> an
     assert_eq!(
         mcp_config
             .mcp_server_catalog
-            .plugin_attributions_by_server_name(),
+            .plugin_attributions_by_server(),
         HashMap::from([(
-            "sample".to_string(),
+            codex_mcp::McpServerKey::in_environment(
+                codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
+                "sample",
+            ),
             McpPluginAttribution::new("sample@test".to_string(), "sample".to_string())
                 .with_host_root(PathUri::from_host_native_path(&plugin_root)?),
         )])
@@ -6182,7 +6192,7 @@ enabled = true
     assert!(
         mcp_config
             .mcp_server_catalog
-            .plugin_attributions_by_server_name()
+            .plugin_attributions_by_server()
             .is_empty()
     );
 
@@ -6285,7 +6295,10 @@ url = "https://sample.example/mcp"
     assert_eq!(
         mcp_config
             .mcp_server_catalog
-            .server("unlisted")
+            .server(&codex_mcp::McpServerKey::in_environment(
+                codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
+                "unlisted",
+            ))
             .map(|server| (server.source().clone(), server.config().clone())),
         Some((
             codex_mcp::McpServerSource::SelectedPlugin(McpPluginAttribution::new(
@@ -8881,29 +8894,19 @@ async fn load_config_uses_requirements_guardian_policy_config() -> std::io::Resu
 }
 
 #[test]
-fn config_toml_deserializes_auto_review_policy_and_template() {
+fn config_toml_deserializes_auto_review_policy() {
     let cfg = toml::from_str::<ConfigToml>(
         r#"
 [auto_review]
 policy = "Use the user-configured guardian policy."
-extra_policy = "Use the user-configured additional policy."
-experimental_policy_template = "Configured template: {{ tenant_policy_config }}"
 "#,
     )
     .expect("TOML deserialization should succeed");
 
     let auto_review = cfg.auto_review.as_ref().expect("auto-review config");
     assert_eq!(
-        (
-            auto_review.policy.as_deref(),
-            auto_review.extra_policy.as_deref(),
-            auto_review.experimental_policy_template.as_deref(),
-        ),
-        (
-            Some("Use the user-configured guardian policy."),
-            Some("Use the user-configured additional policy."),
-            Some("Configured template: {{ tenant_policy_config }}"),
-        )
+        auto_review.policy.as_deref(),
+        Some("Use the user-configured guardian policy.")
     );
 }
 
@@ -8913,7 +8916,7 @@ experimental_policy_template = "Configured template: {{ tenant_policy_config }}"
 #[test_case::test_case("[guardianv2]\nasync_classifier_mode = 'snapshot'", codex_protocol::TranscriptFormat::Line; "legacy_snapshot")]
 #[test_case::test_case("[guardianv2]\nasync_classifier_mode = 'conversation'", codex_protocol::TranscriptFormat::Line; "legacy_conversation")]
 #[tokio::test]
-async fn load_config_uses_auto_review_guardian_policy_config_and_template(
+async fn load_config_uses_auto_review_guardian_policy_config(
     features: &str,
     expected_mode: codex_protocol::TranscriptFormat,
 ) -> std::io::Result<()> {
@@ -8921,15 +8924,8 @@ async fn load_config_uses_auto_review_guardian_policy_config_and_template(
     let cfg = ConfigToml {
         features: Some(toml::from_str(features).unwrap()),
         auto_review: Some(AutoReviewToml {
-            timeout_ms: None,
-            circuit_break_action: None,
             policy: Some("  Use the user-configured guardian policy.  ".to_string()),
-            extra_policy: Some("  Use the user-configured additional policy.  ".to_string()),
-            experimental_policy_template: Some(
-                "  Configured template: {{ tenant_policy_config }}  ".to_string(),
-            ),
-            experimental_conversation_history_prompt: None,
-            conversation_history_max_output_tokens: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -8948,14 +8944,10 @@ async fn load_config_uses_auto_review_guardian_policy_config_and_template(
         (
             config.guardian_transcript_mode,
             config.guardian_policy_config.as_deref(),
-            config.guardian_extra_policy.as_deref(),
-            config.guardian_policy_template.as_deref(),
         ),
         (
             expected_mode,
             Some("Use the user-configured guardian policy."),
-            Some("Use the user-configured additional policy."),
-            Some("Configured template: {{ tenant_policy_config }}"),
         )
     );
 
@@ -9022,10 +9014,10 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
     for (managed_extra, expected_extra) in [
         (
             Some("  Use the managed additional policy.  "),
-            "Use the managed additional policy.",
+            Some("Use the managed additional policy."),
         ),
-        (Some("   "), "Use the user-configured additional policy."),
-        (None, "Use the user-configured additional policy."),
+        (Some("   "), None),
+        (None, None),
     ] {
         let config_layer_stack = ConfigLayerStack::new(
             Vec::new(),
@@ -9039,13 +9031,8 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
         .map_err(std::io::Error::other)?;
         let cfg = ConfigToml {
             auto_review: Some(AutoReviewToml {
-                timeout_ms: None,
-                circuit_break_action: None,
                 policy: Some("Use the user-configured guardian policy.".to_string()),
-                extra_policy: Some("Use the user-configured additional policy.".to_string()),
-                experimental_policy_template: None,
-                experimental_conversation_history_prompt: None,
-                conversation_history_max_output_tokens: None,
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -9067,10 +9054,7 @@ async fn requirements_guardian_policy_beats_auto_review() -> std::io::Result<()>
                 config.guardian_policy_config.as_deref(),
                 config.guardian_extra_policy.as_deref(),
             ),
-            (
-                Some("Use the managed guardian policy."),
-                Some(expected_extra),
-            )
+            (Some("Use the managed guardian policy."), expected_extra,)
         );
     }
     Ok(())
@@ -9081,13 +9065,9 @@ async fn load_config_ignores_empty_auto_review_guardian_policy_config() -> std::
     let codex_home = TempDir::new()?;
     let cfg = ConfigToml {
         auto_review: Some(AutoReviewToml {
-            timeout_ms: None,
-            circuit_break_action: None,
             policy: Some("   ".to_string()),
-            extra_policy: Some("   ".to_string()),
-            experimental_policy_template: None,
             experimental_conversation_history_prompt: Some(String::new()),
-            conversation_history_max_output_tokens: None,
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -10564,6 +10544,10 @@ async fn load_config_applies_otel_trace_metadata() -> std::io::Result<()> {
     let mut fixture = create_test_fixture()?;
     fixture.cfg = toml::from_str(
         r#"
+[otel]
+headers_helper = "company-auth telemetry-headers"
+headers_helper_refresh_interval_ms = 900000
+
 [otel.span_attributes]
 "example.trace_attr" = "enabled"
 
@@ -10584,6 +10568,18 @@ beta = "two"
     )
     .await?;
 
+    assert_eq!(
+        config.otel.headers_helper.as_deref(),
+        Some("company-auth telemetry-headers")
+    );
+    assert_eq!(
+        config
+            .otel
+            .headers_helper_refresh_interval_ms
+            .unwrap()
+            .get(),
+        900000
+    );
     assert_eq!(
         config.otel.span_attributes,
         HashMap::from([("example.trace_attr".to_string(), "enabled".to_string())])
@@ -12454,6 +12450,7 @@ fn retired_feature_requirements_do_not_pin_configured_values(
                     (key.to_string(), required),
                     ("shell_tool".to_string(), false),
                 ]),
+                ..Default::default()
             },
             RequirementSource::EnterpriseManaged {
                 id: "enterprise-id".to_string(),

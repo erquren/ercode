@@ -442,14 +442,6 @@
           "description": "Experimental replacement for the history-retrieval instructions when history tools and Apps are enabled. Omitted or blank values use the built-in prompt.",
           "type": "string"
         },
-        "experimental_policy_template": {
-          "description": "Experimental full Guardian prompt template containing the tenant policy placeholder.",
-          "type": "string"
-        },
-        "extra_policy": {
-          "description": "Additional policy text inserted into the Guardian template's `{{ extra_policy }}` slot.",
-          "type": "string"
-        },
         "policy": {
           "description": "Additional policy instructions inserted into the guardian prompt.",
           "type": "string"
@@ -616,6 +608,12 @@
         }
       },
       "type": "object"
+    },
+    "BuiltinStatusLine": {
+      "enum": [
+        "default"
+      ],
+      "type": "string"
     },
     "BundledSkillsConfig": {
       "additionalProperties": false,
@@ -886,6 +884,9 @@
             "browser_use_full_cdp_access": {
               "type": "boolean"
             },
+            "catalog_apps_instructions": {
+              "type": "boolean"
+            },
             "chronicle": {
               "type": "boolean"
             },
@@ -979,6 +980,9 @@
             "daemon_auto_start": {
               "type": "boolean"
             },
+            "daybreak_program_propagation": {
+              "type": "boolean"
+            },
             "default_mode_request_user_input": {
               "type": "boolean"
             },
@@ -1031,6 +1035,9 @@
               "type": "boolean"
             },
             "fast_mode": {
+              "type": "boolean"
+            },
+            "gateway_setup_wizard": {
               "type": "boolean"
             },
             "gcp_setup_wizard": {
@@ -1129,6 +1136,12 @@
             "incremental_tools": {
               "type": "boolean"
             },
+            "incremental_tools_legacy": {
+              "type": "boolean"
+            },
+            "incremental_tools_legacy_gcp": {
+              "type": "boolean"
+            },
             "instant_interrupt": {
               "type": "boolean"
             },
@@ -1157,6 +1170,9 @@
               "type": "boolean"
             },
             "mcp_connection_sharing": {
+              "type": "boolean"
+            },
+            "mcp_lazy_stdio_startup": {
               "type": "boolean"
             },
             "mcp_oauth_refresh_coordination": {
@@ -1190,6 +1206,9 @@
               "type": "boolean"
             },
             "multi_env_copy_file": {
+              "type": "boolean"
+            },
+            "multi_environment_mcp": {
               "type": "boolean"
             },
             "network_proxy": {
@@ -2127,6 +2146,10 @@
           },
           "description": "Omit to send the gateway token via the Authorization header"
         },
+        "device_authorization_url": {
+          "description": "Optional device endpoint used when the terminal cannot open a browser for gateway sign-in.",
+          "type": "string"
+        },
         "redirect_port": {
           "format": "uint16",
           "minimum": 0.0,
@@ -2235,6 +2258,13 @@
           "format": "uint",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "nested_tool_names": {
+          "description": "Exact Code Mode tool names for the transcript_selected_exec_results section.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -2718,6 +2748,11 @@
     "MarketplaceConfig": {
       "additionalProperties": false,
       "properties": {
+        "auto_update": {
+          "default": false,
+          "description": "Check for updates to installed Git plugins from this marketplace when plugins are listed.",
+          "type": "boolean"
+        },
         "last_revision": {
           "default": null,
           "description": "Git revision Codex last successfully activated for this marketplace.",
@@ -3915,6 +3950,16 @@
           ],
           "description": "Optional log exporter"
         },
+        "headers_helper": {
+          "description": "Command that prints a JSON object of HTTP headers for explicit OTLP HTTP exporters. Runs from CODEX_HOME. Repository-local configuration cannot set OTel options.",
+          "type": "string"
+        },
+        "headers_helper_refresh_interval_ms": {
+          "description": "Interval between helper executions in milliseconds. Defaults to 29 minutes.",
+          "format": "uint64",
+          "minimum": 1.0,
+          "type": "integer"
+        },
         "log_agent_responses": {
           "description": "Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter. Defaults to false. Response text can be sensitive and is capped at 64 KiB.",
           "type": "boolean"
@@ -4629,7 +4674,7 @@
     },
     "RemoteMessageBoardConfigToml": {
       "additionalProperties": false,
-      "description": "Connection to a board provisioned by the research host.",
+      "description": "Connection settings for a remote message board.",
       "properties": {
         "bearer_token": {
           "description": "Board credential supplied directly by a runtime config override.",
@@ -4974,6 +5019,34 @@
         }
       ]
     },
+    "StatusLineProviderId": {
+      "additionalProperties": false,
+      "description": "The configured MCP server and advertised tool name identify a status line provider.",
+      "properties": {
+        "server": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "server",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "StatusLineSelection": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BuiltinStatusLine"
+        },
+        {
+          "$ref": "#/definitions/StatusLineProviderId"
+        }
+      ],
+      "description": "An explicit default overrides an MCP provider from a lower configuration layer."
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -5232,6 +5305,11 @@
           "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `true`. Disabling this leaves `/recap` available on demand.",
           "type": "boolean"
         },
+        "collapse_turn_details": {
+          "default": false,
+          "description": "Summarize tool calls and collapse completed turns in the full-screen transcript. Defaults to `false`.",
+          "type": "boolean"
+        },
         "copy_on_select": {
           "allOf": [
             {
@@ -5355,6 +5433,7 @@
             "global": {
               "change_host": null,
               "clear_terminal": null,
+              "close_sidebar_tab": null,
               "copy": null,
               "equalize_pane_widths": null,
               "find_transcript": null,
@@ -5376,6 +5455,8 @@
               "queue": null,
               "resize_panes": null,
               "select_transcript": null,
+              "sidebar_down": null,
+              "sidebar_up": null,
               "submit": null,
               "toggle_fast_mode": null,
               "toggle_pane_zoom": null,
@@ -5634,6 +5715,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "status_line_provider": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StatusLineSelection"
+            }
+          ],
+          "description": "Local status line selection. Set to \"default\" for built-in items or specify an MCP server and tool."
         },
         "status_line_use_colors": {
           "default": true,
@@ -6184,6 +6273,14 @@
           ],
           "description": "Clear the terminal UI."
         },
+        "close_sidebar_tab": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Close the active sidebar tab."
+        },
         "copy": {
           "allOf": [
             {
@@ -6351,6 +6448,22 @@
             }
           ],
           "description": "Enter keyboard selection mode for the transcript."
+        },
+        "sidebar_down": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Switch to the next sidebar tab."
+        },
+        "sidebar_up": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Switch to the previous sidebar tab."
         },
         "submit": {
           "allOf": [
@@ -6522,6 +6635,7 @@
           "default": {
             "change_host": null,
             "clear_terminal": null,
+            "close_sidebar_tab": null,
             "copy": null,
             "equalize_pane_widths": null,
             "find_transcript": null,
@@ -6543,6 +6657,8 @@
             "queue": null,
             "resize_panes": null,
             "select_transcript": null,
+            "sidebar_down": null,
+            "sidebar_up": null,
             "submit": null,
             "toggle_fast_mode": null,
             "toggle_pane_zoom": null,
@@ -7902,6 +8018,9 @@
         "browser_use_full_cdp_access": {
           "type": "boolean"
         },
+        "catalog_apps_instructions": {
+          "type": "boolean"
+        },
         "chronicle": {
           "type": "boolean"
         },
@@ -7995,6 +8114,9 @@
         "daemon_auto_start": {
           "type": "boolean"
         },
+        "daybreak_program_propagation": {
+          "type": "boolean"
+        },
         "default_mode_request_user_input": {
           "type": "boolean"
         },
@@ -8047,6 +8169,9 @@
           "type": "boolean"
         },
         "fast_mode": {
+          "type": "boolean"
+        },
+        "gateway_setup_wizard": {
           "type": "boolean"
         },
         "gcp_setup_wizard": {
@@ -8145,6 +8270,12 @@
         "incremental_tools": {
           "type": "boolean"
         },
+        "incremental_tools_legacy": {
+          "type": "boolean"
+        },
+        "incremental_tools_legacy_gcp": {
+          "type": "boolean"
+        },
         "instant_interrupt": {
           "type": "boolean"
         },
@@ -8173,6 +8304,9 @@
           "type": "boolean"
         },
         "mcp_connection_sharing": {
+          "type": "boolean"
+        },
+        "mcp_lazy_stdio_startup": {
           "type": "boolean"
         },
         "mcp_oauth_refresh_coordination": {
@@ -8206,6 +8340,9 @@
           "type": "boolean"
         },
         "multi_env_copy_file": {
+          "type": "boolean"
+        },
+        "multi_environment_mcp": {
           "type": "boolean"
         },
         "network_proxy": {

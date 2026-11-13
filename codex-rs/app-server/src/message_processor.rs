@@ -559,7 +559,7 @@ impl MessageProcessor {
             Arc::clone(&thread_list_state_permit),
         );
         let thread_processor = ThreadRequestProcessor::new(
-            auth_manager.clone(),
+            auth_manager,
             Arc::clone(&thread_manager),
             outgoing.clone(),
             arg0_paths.clone(),
@@ -579,7 +579,6 @@ impl MessageProcessor {
             sample_responses,
         );
         let turn_processor = TurnRequestProcessor::new(
-            auth_manager,
             Arc::clone(&thread_manager),
             outgoing.clone(),
             analytics_events_client.clone(),
@@ -1290,7 +1289,7 @@ impl MessageProcessor {
                 .clients_revoke(params)
                 .await
                 .map(|response| Some(response.into())),
-            ClientRequest::ConfigRequirementsRead { params: _, .. } => self
+            ClientRequest::ConfigRequirementsRead { .. } => self
                 .config_processor
                 .config_requirements_read()
                 .await
@@ -1359,7 +1358,7 @@ impl MessageProcessor {
                 .model_provider_config_write(params)
                 .await
                 .map(|r| Some(r.into())),
-            ClientRequest::ModelProviderCapabilitiesRead { params: _, .. } => self
+            ClientRequest::ModelProviderCapabilitiesRead { .. } => self
                 .config_processor
                 .model_provider_capabilities_read()
                 .await
@@ -1774,6 +1773,11 @@ impl MessageProcessor {
                     .thread_inject_items(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadPrepareApprovedPlan { params, .. } => {
+                self.turn_processor
+                    .thread_prepare_approved_plan(&request_id, params)
+                    .await
+            }
             ClientRequest::TurnSteer { params, .. } => {
                 self.turn_processor.turn_steer(&request_id, params).await
             }
@@ -1816,7 +1820,7 @@ impl MessageProcessor {
             ClientRequest::ThreadTimelineList { params, .. } => {
                 self.thread_processor.thread_timeline_list(params).await
             }
-            ClientRequest::ThreadRealtimeListVoices { params: _, .. } => {
+            ClientRequest::ThreadRealtimeListVoices { .. } => {
                 self.turn_processor.thread_realtime_list_voices().await
             }
             ClientRequest::ReviewStart { params, .. } => {
@@ -1890,12 +1894,13 @@ impl MessageProcessor {
                     .bedrock_check_gov_cloud_requirements()
                     .await
             }
-            ClientRequest::GatewayOAuthRead { .. } => {
-                Box::pin(self.account_processor.gateway_oauth_read())
-                    .await
-                    .map(|response| Some(response.into()))
-            }
-            ClientRequest::GatewayOAuthLogin { .. } => {
+            ClientRequest::GatewayOAuthRead { params, .. } => Box::pin(
+                self.account_processor
+                    .gateway_oauth_read(params.unwrap_or_default()),
+            )
+            .await
+            .map(|response| Some(response.into())),
+            ClientRequest::GatewayOAuthLogin { params, .. } => {
                 if session
                     .opted_out_notification_methods()
                     .contains("account/gatewayOAuth/changed")
@@ -1904,10 +1909,11 @@ impl MessageProcessor {
                         "Gateway login requires account/gatewayOAuth/changed notifications",
                     ))
                 } else {
-                    Box::pin(
-                        self.account_processor
-                            .gateway_oauth_login(connection_id, &session.rpc_gate),
-                    )
+                    Box::pin(self.account_processor.gateway_oauth_login(
+                        params.unwrap_or_default(),
+                        connection_id,
+                        &session.rpc_gate,
+                    ))
                     .await
                     .map(|response| Some(response.into()))
                 }
@@ -1941,6 +1947,12 @@ impl MessageProcessor {
             ClientRequest::GetAuthStatus { params, .. } => {
                 self.account_processor.get_auth_status(params).await
             }
+            ClientRequest::GetAccountSecuritySetup { .. } => Ok(Some(
+                self.account_processor
+                    .get_account_security_setup()
+                    .await
+                    .into(),
+            )),
             ClientRequest::GetAccountRateLimits { params, .. } => {
                 self.account_processor.get_account_rate_limits(params).await
             }

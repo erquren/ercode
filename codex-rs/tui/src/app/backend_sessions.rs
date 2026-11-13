@@ -2,9 +2,12 @@
 //! Polling is fair and cancellation-safe; closing one stream never closes another.
 
 use super::resume_preparation::BackendSettings;
+use crate::AppServerTarget;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerSessionEvent;
 use crate::backend_id::BackendId;
+use crate::legacy_core::config::Config;
+use crate::local_settings::LocalSettings;
 use codex_app_server_client::AppServerEvent;
 use codex_app_server_protocol::ServerNotification;
 use std::collections::HashMap;
@@ -12,10 +15,13 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::task::Poll;
 
+type BackendSettingsById = HashMap<BackendId, BackendSettings>;
+
 /// The initial conventional session and any additional sessions registered at launch.
 pub(crate) struct InitialBackendSessions {
     initial: AppServerSession,
     others: Vec<AppServerSession>,
+    settings: BackendSettingsById,
 }
 
 impl InitialBackendSessions {
@@ -23,24 +29,32 @@ impl InitialBackendSessions {
         Self {
             initial,
             others: Vec::new(),
+            settings: HashMap::new(),
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "used by the under-development backend registration path"
-    )]
-    pub(crate) fn multiple(initial: AppServerSession, others: Vec<AppServerSession>) -> Self {
-        assert!(
-            others
-                .iter()
-                .all(|session| session.backend_id() != initial.backend_id())
+    pub(crate) fn register(
+        &mut self,
+        connection: AppServerSession,
+        target: AppServerTarget,
+        config: Config,
+        local_settings: LocalSettings,
+    ) {
+        self.settings.insert(
+            connection.backend_id(),
+            BackendSettings {
+                target,
+                config,
+                local_settings,
+            },
         );
-        Self { initial, others }
+        self.others.push(connection);
     }
 
-    pub(super) fn into_parts(self) -> (AppServerSession, Vec<AppServerSession>) {
-        (self.initial, self.others)
+    pub(super) fn into_parts(
+        self,
+    ) -> (AppServerSession, Vec<AppServerSession>, BackendSettingsById) {
+        (self.initial, self.others, self.settings)
     }
 }
 
@@ -51,6 +65,8 @@ struct SessionEntry {
     listening: bool,
     pending_events: VecDeque<AppServerSessionEvent>,
     side_startup: Vec<AppServerSessionEvent>,
+    // The displayed session keeps its input states in the App.
+    parked_inputs: HashMap<codex_protocol::ThreadId, crate::chatwidget::ThreadInputState>,
 }
 
 /// A session's stable position in an append-only backend collection.
@@ -92,6 +108,7 @@ impl BackendSessions {
             listening: true,
             pending_events: VecDeque::new(),
             side_startup: Vec::new(),
+            parked_inputs: HashMap::new(),
         });
     }
 
@@ -110,6 +127,37 @@ impl BackendSessions {
         &self.entries[slot.0].session
     }
 
+    pub(super) fn session_and_parked_inputs(
+        &mut self,
+        slot: SessionSlot,
+    ) -> (
+        &AppServerSession,
+        &mut HashMap<codex_protocol::ThreadId, crate::chatwidget::ThreadInputState>,
+    ) {
+        let entry = &mut self.entries[slot.0];
+        (&entry.session, &mut entry.parked_inputs)
+    }
+
+    pub(super) fn switch_displayed(
+        &mut self,
+        destination: SessionSlot,
+        displayed_inputs: &mut HashMap<
+            codex_protocol::ThreadId,
+            crate::chatwidget::ThreadInputState,
+        >,
+    ) {
+        *self.parked_inputs_mut(self.displayed) = std::mem::take(displayed_inputs);
+        *displayed_inputs = std::mem::take(self.parked_inputs_mut(destination));
+        self.displayed = destination;
+    }
+
+    pub(super) fn parked_inputs_mut(
+        &mut self,
+        slot: SessionSlot,
+    ) -> &mut HashMap<codex_protocol::ThreadId, crate::chatwidget::ThreadInputState> {
+        &mut self.entries[slot.0].parked_inputs
+    }
+
     pub(super) fn displayed_owner(&self) -> BackendId {
         self.session_at(self.displayed).backend_id()
     }
@@ -123,11 +171,12 @@ impl BackendSessions {
             .collect()
     }
 
-    pub(super) fn displayed_name(&self) -> Option<String> {
+    pub(super) fn displayed_name(&self, target: &AppServerTarget) -> Option<String> {
         let slot = self.displayed.0;
-        self.entries[slot].listening.then(|| match slot {
-            0 => "Local".to_string(),
-            index => format!("Connection {}", index + 1),
+        self.entries[slot].listening.then(|| match (target, slot) {
+            (AppServerTarget::Cloud, _) => "Cloud".to_string(),
+            (_, 0) => "Local".to_string(),
+            (_, index) => format!("Connection {}", index + 1),
         })
     }
 

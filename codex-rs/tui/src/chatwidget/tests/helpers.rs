@@ -6,6 +6,13 @@ use codex_app_server_protocol::PluginAvailability;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
+#[track_caller]
+pub(crate) fn assert_pending_steers_unadmitted(input: &ThreadInputState) {
+    for steer in &input.pending_steers {
+        assert_eq!(steer.admitted_turn_id, None);
+    }
+}
+
 pub(super) async fn test_config() -> (tempfile::TempDir, Config) {
     // Start from the built-in defaults so tests do not inherit host/system config.
     let codex_home = tempfile::Builder::new()
@@ -45,7 +52,7 @@ pub(crate) fn normalize_working_snapshot(text: String) -> String {
     let text = normalize_snapshot_paths(text)
         .replace("◦ Working", "• Working")
         .replace("◦ Wor…", "• Wor…");
-    regex_lite::Regex::new(r"(?m)^• Working \(\d+s")
+    regex_lite::Regex::new(r"• Working \(\d+s")
         .expect("valid working timer pattern")
         .replace_all(&text, "• Working (0s")
         .into_owned()
@@ -926,6 +933,7 @@ pub(super) fn replay_agent_message(
 ) {
     chat.replay_thread_item(
         AppServerThreadItemPayload::AgentMessage {
+            moderation: None,
             id: item_id.to_string(),
             text: text.into(),
             phase: Some(MessagePhase::FinalAnswer),
@@ -1082,6 +1090,7 @@ pub(super) fn complete_assistant_message(
             chat.thread_id.map(|id| id.to_string()).unwrap_or_default(),
             "turn-1".to_string(),
             AppServerThreadItemPayload::AgentMessage {
+                moderation: None,
                 id: item_id.to_string(),
                 text: text.to_string(),
                 phase,
@@ -1099,6 +1108,8 @@ pub(super) fn complete_assistant_message(
 pub(super) fn pending_steer(text: &str) -> PendingSteer {
     PendingSteer {
         client_id: "test-submission".to_string(),
+        admitted_turn_id: None,
+        optimistically_rendered: false,
         user_message: UserMessage::from(text),
         history_record: UserMessageHistoryRecord::UserMessageText,
         source: UserMessageSource::Prompt,

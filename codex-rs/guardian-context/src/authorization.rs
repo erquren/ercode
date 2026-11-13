@@ -84,9 +84,7 @@ impl SectionContributor for RootConversationSection {
     }
 
     fn contribute(&self, input: &SectionInput<'_>) -> Result<Option<ContextSection>, SectionError> {
-        if input.target == crate::ContextTarget::Sync
-            && let Some(candidates) = input.root_conversation_candidates
-        {
+        if let Some(candidates) = input.root_conversation_candidates {
             return Ok(Some(ContextSection::RootConversation {
                 content: RootConversationContent::Collected(candidates.clone()),
             }));
@@ -121,8 +119,11 @@ pub(crate) fn root_conversation_items(
             | GuardianRootMessage::RetainedContextScope
             | GuardianRootMessage::LegacyContextScope => true,
         };
+        let verified_answer = matches!(message, GuardianRootMessage::UserInput(_));
         let text = message.render();
-        let item = if protected {
+        let item = if verified_answer {
+            crate::Budgeted::verified_answer(text)
+        } else if protected {
             crate::Budgeted::protected(text)
         } else {
             crate::Budgeted::required(text)
