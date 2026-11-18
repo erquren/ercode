@@ -1,0 +1,40 @@
+name: Retire superseded repair checks
+on:
+  push:
+    branches: ["release-maintenance/0.170.0-cancel-old"]
+    paths: [".github/workflows/ercode-retire-old-build.yml"]
+permissions:
+  contents: read
+  actions: write
+jobs:
+  retire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Cancel only reviewed superseded repair runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          reviewed = {
+              44347780131: ("efbf2bd668eb865854f4261946cf12c7e32e5ebc", "ercode-release"),
+              44347780121: ("efbf2bd668eb865854f4261946cf12c7e32e5ebc", "blocking-ci"),
+              44364799935: ("b824918393eca7064cfe7a7b82287aa3d5a806ff", "blocking-ci"),
+              44364801412: ("b824918393eca7064cfe7a7b82287aa3d5a806ff", "postmerge-ci"),
+          }
+          headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"}
+          for run_id, (sha, workflow) in reviewed.items():
+              base = f"https://api.github.com/repos/erquren/ercode/actions/runs/{run_id}"
+              with urllib.request.urlopen(urllib.request.Request(base, headers=headers), timeout=30) as response:
+                  run = json.load(response)
+              assert run["id"] == run_id and run["repository"]["full_name"] == "erquren/ercode"
+              assert run["head_sha"] == sha and run["head_branch"] == "main" and run["event"] == "push"
+              assert run["path"] == f".github/workflows/{workflow}.yml"
+              if run["status"] == "completed":
+                  print(f"{run_id} already completed; no action")
+                  continue
+              with urllib.request.urlopen(urllib.request.Request(base + "/cancel", data=b"", headers=headers, method="POST"), timeout=30) as response:
+                  assert response.status == 202
+              print(f"Requested cancellation of superseded repair run {run_id}")
+          PY
