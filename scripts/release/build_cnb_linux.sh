@@ -2,7 +2,7 @@
 set -euo pipefail
 
 target=x86_64-unknown-linux-musl
-version=0.169.0
+version=0.170.0
 
 if [[ "${CNB_BRANCH:-}" != "$version" ]]; then
   echo "Expected tag $version, got ${CNB_BRANCH:-<unset>}" >&2
