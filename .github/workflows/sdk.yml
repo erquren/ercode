@@ -9,9 +9,7 @@ env:
 
 jobs:
   python-sdk-installation:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -45,9 +43,7 @@ jobs:
       id-token: write
     # Keep the Bazel CLI build advisory until the public build and cache rollout is verified.
     continue-on-error: true
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:
       name: bazel
