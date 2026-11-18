@@ -439,21 +439,32 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
             oldest = releases / f"{versions[0]}-{target}"
             helper = oldest / "bin/codex-code-mode-host"
-            shutil.copy("/bin/sleep", helper)
-            if system.sysname == "Darwin":
-                # A copied macOS system binary cannot run with its platform signature.
-                subprocess.run(
-                    ["/usr/bin/codesign", "--force", "--sign", "-", str(helper)],
-                    check=True,
-                    capture_output=True,
-                )
+            # Compile an actual helper rather than copying a system command.
+            # System sleep may be a multicall binary that dispatches using its
+            # executable filename, even when argv[0] is explicitly set to sleep.
+            # CI Linux and macOS runners both provide a C toolchain.
+            subprocess.run(
+                ["cc", "-x", "c", "-", "-o", str(helper)],
+                input=(
+                    "#include <unistd.h>\n"
+                    "int main(void) {\n"
+                    "  if (write(1, \"R\", 1) != 1) return 1;\n"
+                    "  for (;;) pause();\n"
+                    "}\n"
+                ),
+                text=True,
+                check=True,
+                capture_output=True,
+            )
             # A helper can outlive its parent CLI; retain its whole release.
-            # Some distributions ship sleep as a coreutils multicall binary:
-            # it dispatches by argv[0], not by the executable's on-disk name.
-            # Keep the actual executable inside the release so /proc and lsof
-            # still exercise retention of a running installed helper.
-            with subprocess.Popen(["sleep", "300"], executable=str(helper)) as running:
+            # Wait for readiness so a failed exec cannot look like a pruning bug.
+            with subprocess.Popen([str(helper)], stdout=subprocess.PIPE) as running:
                 try:
+                    self.assertTrue(
+                        select.select([running.stdout], [], [], 10)[0],
+                        "Helper did not become ready",
+                    )
+                    self.assertEqual(running.stdout.read(1), b"R")
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
                     )
@@ -567,8 +578,15 @@ class InstallShTest(unittest.TestCase):
                             readable, "installer did not attempt retirement"
                         )
                         self.assertEqual(os.read(ready_fd, 128), b"ready\n")
-                        with subprocess.Popen([str(helper), "300"]) as late_helper:
+                        with subprocess.Popen(
+                            [str(helper)], stdout=subprocess.PIPE
+                        ) as late_helper:
                             try:
+                                self.assertTrue(
+                                    select.select([late_helper.stdout], [], [], 10)[0],
+                                    "Late helper did not become ready",
+                                )
+                                self.assertEqual(late_helper.stdout.read(1), b"R")
                                 os.write(resume_fd, b"continue\n")
                                 raced, _ = installing.result(timeout=30)
                                 self.assertEqual(raced.returncode, 0, raced.stderr)

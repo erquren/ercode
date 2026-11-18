@@ -157,6 +157,10 @@ impl ModelCatalog {
         Ok(models)
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "API setup suspension must drain in-flight catalog fetches before credentials change"
+    )]
     pub(crate) async fn list_models_from_snapshot(
         &self,
         config: Arc<Config>,

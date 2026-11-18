@@ -2,8 +2,8 @@
 #
 # GitHub-hosted Windows runners do not always expose a secondary D: volume. When
 # they do not, create a Dev Drive VHD. CI depends on this path for its
-# build directories where CI spends significant time doing I/O, so fail the
-# job if no real Dev Drive is available.
+# build directories where CI spends significant time doing I/O. Windows Server
+# 2022 hosted runners lack Dev Drive support; use their existing filesystem.
 
 function Test-DevDrive {
     param([string]$Drive)
@@ -20,6 +20,16 @@ function Invoke-BestEffort {
     } catch {
         Write-Warning "$Description failed: $($_.Exception.Message)"
     }
+}
+
+# Dev Drive is an optimization, not a build requirement. Check support before
+# provisioning a VHD, so Windows Server 2022 does not fail at Format-Volume.
+if (-not (Get-Command Format-Volume).Parameters.ContainsKey("DevDrive")) {
+    $BuildRoot = Join-Path $env:RUNNER_TEMP "ci"
+    New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
+    Write-Output "Dev Drive is unavailable; using $BuildRoot on the existing filesystem."
+    "CI_BUILD_ROOT=$BuildRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+    return
 }
 
 if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {

@@ -455,8 +455,7 @@ async fn api_setup_suspension_prevents_new_key_from_reaching_old_catalog_endpoin
         config_manager,
         None,
         Arc::clone(&config),
-        models,
-        Arc::clone(&auth),
+        test_thread_manager(&config, Some(models), Arc::clone(&auth)),
     );
     // Prove the spy would be contacted without suspension.
     catalog.list_models(RefreshStrategy::Online).await?;
