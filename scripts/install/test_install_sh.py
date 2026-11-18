@@ -448,7 +448,7 @@ class InstallShTest(unittest.TestCase):
                 input=(
                     "#include <unistd.h>\n"
                     "int main(void) {\n"
-                    "  if (write(1, \"R\", 1) != 1) return 1;\n"
+                    '  if (write(1, "R", 1) != 1) return 1;\n'
                     "  for (;;) pause();\n"
                     "}\n"
                 ),

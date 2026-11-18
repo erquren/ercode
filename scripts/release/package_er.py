@@ -34,15 +34,23 @@ def digest(path):
 
 
 def git_commit(source):
-    return subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    return subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
 
 
 def executables(package, windows):
     suffix = ".exe" if windows else ""
-    files = [package / "bin" / (name + suffix) for name in ("er", "codex-code-mode-host", "codex-exec-server")]
+    files = [
+        package / "bin" / (name + suffix)
+        for name in ("er", "codex-code-mode-host", "codex-exec-server")
+    ]
     files.append(package / "codex-path" / ("rg" + suffix))
     if windows:
-        files.extend(package / "codex-resources" / name for name in ("codex-command-runner.exe", "codex-windows-sandbox-setup.exe"))
+        files.extend(
+            package / "codex-resources" / name
+            for name in ("codex-command-runner.exe", "codex-windows-sandbox-setup.exe")
+        )
     elif "linux" in json.loads((package / "codex-package.json").read_text())["target"]:
         files.append(package / "codex-resources/bwrap")
     return files
@@ -57,34 +65,58 @@ def verify_architecture(path, target):
         assert struct.unpack_from("<H", data, 18)[0] == expected, path
         headers = subprocess.check_output(["readelf", "-l", str(path)], text=True)
         dynamic = subprocess.check_output(["readelf", "-d", str(path)], text=True)
-        assert "INTERP" not in headers and "(NEEDED)" not in dynamic, f"Not static: {path}"
+        assert "INTERP" not in headers and "(NEEDED)" not in dynamic, (
+            f"Not static: {path}"
+        )
     elif "windows" in target:
         with path.open("rb") as stream:
             header = stream.read(64)
             assert header[:2] == b"MZ", path
             stream.seek(struct.unpack_from("<I", header, 60)[0])
             pe = stream.read(6)
-        assert pe[:4] == b"PE\0\0" and struct.unpack_from("<H", pe, 4)[0] == 0x8664, path
+        assert pe[:4] == b"PE\0\0" and struct.unpack_from("<H", pe, 4)[0] == 0x8664, (
+            path
+        )
     else:
         # lipo treats arguments after -verify_arch as architectures, not files.
         run(["lipo", path, "-verify_arch", "arm64"])
         libraries = subprocess.check_output(["otool", "-L", str(path)], text=True)
         for line in libraries.splitlines()[1:]:
             dependency = line.strip().split(" (", 1)[0]
-            assert dependency.startswith(("/usr/lib/", "/System/Library/")), f"Unbundled macOS dependency: {dependency} ({path})"
+            assert dependency.startswith(("/usr/lib/", "/System/Library/")), (
+                f"Unbundled macOS dependency: {dependency} ({path})"
+            )
 
 
 def sign_macos(package, source):
     for path in (package / "bin").iterdir():
         entitlement_name = "codex" if path.name == "er" else path.name
-        entitlements = source / ".github/scripts/macos-signing" / (entitlement_name + ".entitlements.plist")
-        run(["codesign", "--force", "--sign", "-", "--options", "runtime", "--entitlements", entitlements, path])
+        entitlements = (
+            source
+            / ".github/scripts/macos-signing"
+            / (entitlement_name + ".entitlements.plist")
+        )
+        run(
+            [
+                "codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--options",
+                "runtime",
+                "--entitlements",
+                entitlements,
+                path,
+            ]
+        )
         run(["codesign", "--verify", "--strict", path])
 
 
 def archive_package(package, archive):
     if archive.suffix == ".zip":
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as out:
+        with zipfile.ZipFile(
+            archive, "w", zipfile.ZIP_DEFLATED, compresslevel=6
+        ) as out:
             for path in sorted(package.rglob("*")):
                 if path.is_file():
                     out.write(path, path.relative_to(package.parent))
@@ -102,7 +134,11 @@ def verify_package(package, target, version, commit):
     assert metadata["target"] == target and metadata["version"] == version, metadata
     assert metadata["entrypoint"] == ("bin/er.exe" if windows else "bin/er"), metadata
     info = json.loads((package / "BUILD-INFO.json").read_text())
-    assert info["sourceCommit"] == commit and info["target"] == target and info["version"] == version, info
+    assert (
+        info["sourceCommit"] == commit
+        and info["target"] == target
+        and info["version"] == version
+    ), info
     for binary in executables(package, windows):
         assert binary.is_file(), binary
         verify_architecture(binary, target)
@@ -110,15 +146,38 @@ def verify_package(package, target, version, commit):
     banner = subprocess.check_output([str(cli), "--version"], text=True).strip()
     assert banner == f"er {version}", banner
     for name in ("er", "codex-code-mode-host", "codex-exec-server"):
-        run([package / "bin" / (name + (".exe" if windows else "")), "--help"], stdout=subprocess.DEVNULL)
+        run(
+            [package / "bin" / (name + (".exe" if windows else "")), "--help"],
+            stdout=subprocess.DEVNULL,
+        )
     with tempfile.TemporaryDirectory(prefix="er-install-check-") as temp:
         temp = Path(temp)
         if windows:
-            run(["pwsh", "-NoProfile", "-File", package / "install.ps1", "-ErHome", temp / "config",
-                 "-BinDir", temp / "bin"])
+            run(
+                [
+                    "pwsh",
+                    "-NoProfile",
+                    "-File",
+                    package / "install.ps1",
+                    "-ErHome",
+                    temp / "config",
+                    "-BinDir",
+                    temp / "bin",
+                ]
+            )
             run(["cmd.exe", "/d", "/c", str(temp / "bin/er.cmd"), "--version"])
         else:
-            run([sys.executable, package / "install.py", package, "--home", temp / "config", "--bin-dir", temp / "bin"])
+            run(
+                [
+                    sys.executable,
+                    package / "install.py",
+                    package,
+                    "--home",
+                    temp / "config",
+                    "--bin-dir",
+                    temp / "bin",
+                ]
+            )
             run([temp / "bin/er", "--version"])
     rg = package / "codex-path" / ("rg.exe" if windows else "rg")
     run([rg, "--version"], timeout=30)
@@ -135,7 +194,9 @@ def verify_archive(archive, target, version, commit):
             with zipfile.ZipFile(archive) as bundle:
                 for member in bundle.namelist():
                     path = root / member
-                    assert path.resolve().is_relative_to((root / name).resolve()), member
+                    assert path.resolve().is_relative_to((root / name).resolve()), (
+                        member
+                    )
                 bundle.extractall(root)
         else:
             with tarfile.open(archive) as bundle:
@@ -154,7 +215,9 @@ def main():
     args = parser.parse_args()
     source = args.source.resolve()
     output = args.output_dir.resolve()
-    version = tomllib.loads((source / "codex-rs/Cargo.toml").read_text())["workspace"]["package"]["version"]
+    version = tomllib.loads((source / "codex-rs/Cargo.toml").read_text())["workspace"][
+        "package"
+    ]["version"]
     commit = git_commit(source)
     windows = "windows" in args.target
     package = output / f"er-{version}-{TARGETS[args.target]}"
@@ -163,22 +226,38 @@ def main():
     if args.existing_package:
         existing = args.existing_package.resolve()
         original_info = json.loads((existing / "BUILD-INFO.json").read_text())
-        assert original_info["sourceCommit"] == commit, "Prebuilt source commit does not match release tag"
+        assert original_info["sourceCommit"] == commit, (
+            "Prebuilt source commit does not match release tag"
+        )
         assert original_info["target"] == args.target, "Prebuilt target mismatch"
         shutil.copytree(existing, package)
     else:
         env = {**os.environ, "CODEX_REPO_ROOT": str(source)}
-        command = [sys.executable, source / "scripts/build_codex_package.py", "--target", args.target,
-                   "--cargo-profile", "release", "--package-dir", package]
+        command = [
+            sys.executable,
+            source / "scripts/build_codex_package.py",
+            "--target",
+            args.target,
+            "--cargo-profile",
+            "release",
+            "--package-dir",
+            package,
+        ]
         if args.rg_bin:
             command.extend(["--rg-bin", args.rg_bin.resolve()])
         run(command, env=env)
     metadata = json.loads((package / "codex-package.json").read_text())
-    assert metadata["target"] == args.target and metadata["version"] == version, metadata
+    assert metadata["target"] == args.target and metadata["version"] == version, (
+        metadata
+    )
     assert metadata["entrypoint"] == ("bin/er.exe" if windows else "bin/er"), metadata
     for name in ("LICENSE", "NOTICE"):
         shutil.copy2(source / name, package / name)
-    for name in ("third_party/wezterm/LICENSE", "third_party/voice/NOTICE.md", "codex-rs/vendor/bubblewrap/LICENSE"):
+    for name in (
+        "third_party/wezterm/LICENSE",
+        "third_party/voice/NOTICE.md",
+        "codex-rs/vendor/bubblewrap/LICENSE",
+    ):
         if (source / name).is_file():
             destination = package / "licenses" / name
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,33 +273,60 @@ def main():
     if (source / "docs/token-speeds.md").exists():
         shutil.copy2(source / "docs/token-speeds.md", package / "TOKEN-SPEEDS.md")
     direct = r".\bin\er.exe --no-daemon" if windows else "./bin/er --no-daemon"
-    notes = [f"er {version} - {TARGETS[args.target]}", "", "Extract and run directly (no installer required):",
-             f"  {direct}", "", "Optional installation from this directory:",
-             f"  {install}", "", "Launch the new backend after upgrading:", f"  {launch}", "",
-             "Keep bin, codex-path and codex-resources together. Do not copy only the er binary.",
-             "The optional installer keeps helpers private under ~/.ercode.",
-             "Add ~/.local/bin to PATH to use the er command.", f"Source commit: {commit}"]
+    notes = [
+        f"er {version} - {TARGETS[args.target]}",
+        "",
+        "Extract and run directly (no installer required):",
+        f"  {direct}",
+        "",
+        "Optional installation from this directory:",
+        f"  {install}",
+        "",
+        "Launch the new backend after upgrading:",
+        f"  {launch}",
+        "",
+        "Keep bin, codex-path and codex-resources together. Do not copy only the er binary.",
+        "The optional installer keeps helpers private under ~/.ercode.",
+        "Add ~/.local/bin to PATH to use the er command.",
+        f"Source commit: {commit}",
+    ]
     if "linux" in args.target:
-        notes.append("All packaged executables are static MUSL builds and require no system GLIBC.")
+        notes.append(
+            "All packaged executables are static MUSL builds and require no system GLIBC."
+        )
     if "darwin" in args.target:
-        notes.append("Apple Silicon build, macOS 14+. Ad-hoc signed; not Developer ID notarized.")
+        notes.append(
+            "Apple Silicon build, macOS 14+. Ad-hoc signed; not Developer ID notarized."
+        )
         sign_macos(package, source)
     (package / "README.txt").write_text("\n".join(notes) + "\n", encoding="utf-8")
-    info = {"version": version, "sourceCommit": commit, "target": args.target, "profile": "release",
-            "packagingCommit": git_commit(Path(__file__).resolve().parents[2]),
-            "reusedBinaries": bool(args.existing_package)}
+    info = {
+        "version": version,
+        "sourceCommit": commit,
+        "target": args.target,
+        "profile": "release",
+        "packagingCommit": git_commit(Path(__file__).resolve().parents[2]),
+        "reusedBinaries": bool(args.existing_package),
+    }
     if original_info:
         info["originalBuild"] = original_info
     else:
-        info["buildSettings"] = {key: os.environ.get(key) for key in
-                                 ("CARGO_PROFILE_RELEASE_LTO", "CARGO_PROFILE_RELEASE_DEBUG", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS")}
-    (package / "BUILD-INFO.json").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+        info["buildSettings"] = {
+            key: os.environ.get(key)
+            for key in (
+                "CARGO_PROFILE_RELEASE_LTO",
+                "CARGO_PROFILE_RELEASE_DEBUG",
+                "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+            )
+        }
+    (package / "BUILD-INFO.json").write_text(
+        json.dumps(info, indent=2) + "\n", encoding="utf-8"
+    )
     archive = package.with_name(package.name + (".zip" if windows else ".tar.gz"))
     archive_package(package, archive)
     # Test the exact distributed archive after extraction, including executable bits
     # and the optional installers, rather than only the staging directory.
     verify_archive(archive, args.target, version, commit)
-
 
 
 if __name__ == "__main__":

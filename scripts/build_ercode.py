@@ -56,7 +56,9 @@ def brand_package(package_dir: Path, repo_root: Path = REPO_ROOT) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = create_parser()
-    parser.description = "Build an ercode CLI package with companion resources and license notices."
+    parser.description = (
+        "Build an ercode CLI package with companion resources and license notices."
+    )
     args = parser.parse_args(argv)
     if args.variant != "codex":
         parser.error("ercode packages support only the codex CLI variant")

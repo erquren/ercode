@@ -31,13 +31,21 @@ MAX_ATTEMPTS = 4
 def transient(error):
     if isinstance(error, urllib.error.HTTPError):
         return error.code in {408, 429, 500, 502, 503, 504} or (
-            error.code == 403 and error.headers.get("X-RateLimit-Remaining") == "0")
-    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError,
-                              http.client.HTTPException))
+            error.code == 403 and error.headers.get("X-RateLimit-Remaining") == "0"
+        )
+    return isinstance(
+        error,
+        (
+            urllib.error.URLError,
+            TimeoutError,
+            ConnectionError,
+            http.client.HTTPException,
+        ),
+    )
 
 
 def pause(attempt, error):
-    delay = min(2 ** attempt, 30)
+    delay = min(2**attempt, 30)
     if isinstance(error, urllib.error.HTTPError):
         retry_after = error.headers.get("Retry-After", "")
         if retry_after.isdigit():
@@ -64,10 +72,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def api(path, method="GET", data=None):
     url = path if path.startswith("https://") else "https://api.github.com" + path
     parsed = urllib.parse.urlsplit(url)
-    if (parsed.scheme != "https" or parsed.hostname not in {"api.github.com", "uploads.github.com"}
-            or parsed.username or parsed.password or parsed.port not in (None, 443)):
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"api.github.com", "uploads.github.com"}
+        or parsed.username
+        or parsed.password
+        or parsed.port not in (None, 443)
+    ):
         raise ValueError("Refusing non-GitHub API destination")
-    headers = {"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"}
+    headers = {
+        "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+        "Accept": "application/vnd.github+json",
+    }
     if isinstance(data, Path):
         headers["Content-Type"] = "application/octet-stream"
         body = data.read_bytes()
@@ -80,9 +96,12 @@ def api(path, method="GET", data=None):
     def request():
         # Never let urllib forward an authenticated request to a redirect target.
         with urllib.request.build_opener(NoRedirect).open(
-                urllib.request.Request(url, data=body, method=method, headers=headers), timeout=120 if method == "GET" else 600) as response:
+            urllib.request.Request(url, data=body, method=method, headers=headers),
+            timeout=120 if method == "GET" else 600,
+        ) as response:
             content = response.read()
             return json.loads(content) if content else None
+
     # A failed write may already have completed. Its caller must reconcile it.
     return retry_read(request) if method == "GET" else request()
 
@@ -98,11 +117,17 @@ def download(path, destination, accept="application/vnd.github+json"):
     destination = Path(destination)
 
     def attempt():
-        request = urllib.request.Request("https://api.github.com" + path, headers={
-            "Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": accept,
-        })
+        request = urllib.request.Request(
+            "https://api.github.com" + path,
+            headers={
+                "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                "Accept": accept,
+            },
+        )
         try:
-            response = urllib.request.build_opener(NoRedirect).open(request, timeout=120)
+            response = urllib.request.build_opener(NoRedirect).open(
+                request, timeout=120
+            )
         except urllib.error.HTTPError as error:
             if error.code not in {301, 302, 303, 307, 308}:
                 raise
@@ -111,10 +136,17 @@ def download(path, destination, accept="application/vnd.github+json"):
             if urllib.parse.urlsplit(location).scheme != "https":
                 raise ValueError("Refusing insecure artifact download")
             # A fresh unauthenticated request is essential for signed storage URLs.
-            response = urllib.request.build_opener(HTTPSRedirect).open(location, timeout=120)
+            response = urllib.request.build_opener(HTTPSRedirect).open(
+                location, timeout=120
+            )
         temporary = None
         try:
-            with response, tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as output:
+            with (
+                response,
+                tempfile.NamedTemporaryFile(
+                    dir=destination.parent, delete=False
+                ) as output,
+            ):
                 temporary = Path(output.name)
                 shutil.copyfileobj(response, output)
                 length = response.headers.get("Content-Length")
@@ -124,6 +156,7 @@ def download(path, destination, accept="application/vnd.github+json"):
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+
     retry_read(attempt)
 
 
@@ -168,12 +201,17 @@ def wait_for_builds(repo, runs, tag):
                 platform = job["name"].removeprefix("Build ")
                 if platform in TARGETS and job["id"] > selected.get(platform, (0,))[0]:
                     selected[platform] = (job["id"], run, job)
-        status = {platform: (value[2]["status"], value[2]["conclusion"]) for platform, value in selected.items()}
+        status = {
+            platform: (value[2]["status"], value[2]["conclusion"])
+            for platform, value in selected.items()
+        }
         if status != previous:
             print("Build status:", json.dumps(status), flush=True)
             previous = status
         if len(selected) != len(TARGETS):
-            raise RuntimeError("Selected workflow runs do not contain all four build jobs")
+            raise RuntimeError(
+                "Selected workflow runs do not contain all four build jobs"
+            )
         for platform, (_, _, job) in selected.items():
             if job["status"] == "completed" and job["conclusion"] != "success":
                 raise RuntimeError(f"{platform} failed: {job['html_url']}")
@@ -187,14 +225,24 @@ def collect(repo, builds, tag, commit, root):
     files = []
     for platform, target in TARGETS.items():
         run = builds[platform]
-        artifacts = paginated(f"/repos/{repo}/actions/runs/{run}/artifacts", "artifacts")
-        artifact = next(item for item in artifacts if item["name"] == f"er-{tag}-{platform}" and not item["expired"])
+        artifacts = paginated(
+            f"/repos/{repo}/actions/runs/{run}/artifacts", "artifacts"
+        )
+        artifact = next(
+            item
+            for item in artifacts
+            if item["name"] == f"er-{tag}-{platform}" and not item["expired"]
+        )
         outer = root / f"artifact-{artifact['id']}.zip"
         download(f"/repos/{repo}/actions/artifacts/{artifact['id']}/zip", outer)
-        filename = f"er-{version}-{platform}" + (".zip" if platform.startswith("windows") else ".tar.gz")
+        filename = f"er-{version}-{platform}" + (
+            ".zip" if platform.startswith("windows") else ".tar.gz"
+        )
         expected = {filename, filename + ".sha256"}
         with zipfile.ZipFile(outer) as bundle:
-            assert len(bundle.namelist()) == 2 and set(bundle.namelist()) == expected, bundle.namelist()
+            assert len(bundle.namelist()) == 2 and set(bundle.namelist()) == expected, (
+                bundle.namelist()
+            )
             for name in expected:
                 with bundle.open(name) as source, (root / name).open("wb") as output:
                     shutil.copyfileobj(source, output)
@@ -215,8 +263,14 @@ def verify_package(archive, checksum, tag, commit, platform, target):
     else:
         with tarfile.open(archive) as bundle:
             metadata = json.load(bundle.extractfile(metadata_name))
-    assert metadata["sourceCommit"] == commit and metadata["target"] == target and metadata["version"] == version, metadata
-    assert metadata["reusedBinaries"] is False, "Every release platform must be compiled on a runner"
+    assert (
+        metadata["sourceCommit"] == commit
+        and metadata["target"] == target
+        and metadata["version"] == version
+    ), metadata
+    assert metadata["reusedBinaries"] is False, (
+        "Every release platform must be compiled on a runner"
+    )
     print("Verified:", platform, recorded, flush=True)
 
 
@@ -224,14 +278,20 @@ def verify_replacement_files(files, tag, commit):
     version = version_from_tag(tag)
     expected = {}
     for platform, target in TARGETS.items():
-        name = f"er-{version}-{platform}" + (".zip" if platform.startswith("windows") else ".tar.gz")
+        name = f"er-{version}-{platform}" + (
+            ".zip" if platform.startswith("windows") else ".tar.gz"
+        )
         expected[name] = (platform, target)
     paths = {path.name: path for path in files}
     names = set(expected) | {name + ".sha256" for name in expected}
     if len(files) != len(names) or set(paths) != names:
-        raise RuntimeError("Draft replacement requires all four verified packages and checksums")
+        raise RuntimeError(
+            "Draft replacement requires all four verified packages and checksums"
+        )
     for name, (platform, target) in expected.items():
-        verify_package(paths[name], paths[name + ".sha256"], tag, commit, platform, target)
+        verify_package(
+            paths[name], paths[name + ".sha256"], tag, commit, platform, target
+        )
 
 
 def verify_uploaded(repo, asset, path, root):
@@ -241,13 +301,19 @@ def verify_uploaded(repo, asset, path, root):
         assert asset["digest"] == expected, (path.name, asset["digest"], expected)
     else:
         copy = root / f"verify-{asset['id']}"
-        download(f"/repos/{repo}/releases/assets/{asset['id']}", copy, "application/octet-stream")
+        download(
+            f"/repos/{repo}/releases/assets/{asset['id']}",
+            copy,
+            "application/octet-stream",
+        )
         assert digest(copy) == digest(path), path.name
         copy.unlink()
 
 
 def find_release(repo, tag):
-    matches = [item for item in paginated(f"/repos/{repo}/releases") if item["tag_name"] == tag]
+    matches = [
+        item for item in paginated(f"/repos/{repo}/releases") if item["tag_name"] == tag
+    ]
     if len(matches) > 1:
         raise RuntimeError("Multiple releases found for tag")
     return matches[0] if matches else None
@@ -274,8 +340,18 @@ def create_draft(repo, tag, commit):
         return require_draft(existing)
     assert tag_commit(repo, tag) == commit, "Release tag moved"
     try:
-        return require_draft(api(f"/repos/{repo}/releases", "POST", {
-            "tag_name": tag, "target_commitish": commit, "name": "er " + tag, "draft": True}))
+        return require_draft(
+            api(
+                f"/repos/{repo}/releases",
+                "POST",
+                {
+                    "tag_name": tag,
+                    "target_commitish": commit,
+                    "name": "er " + tag,
+                    "draft": True,
+                },
+            )
+        )
     except Exception as error:
         if not transient(error):
             raise
@@ -284,23 +360,35 @@ def create_draft(repo, tag, commit):
             return require_draft(existing)
         # Absence after an uncertain POST is not proof it was never applied.
         # Stop rather than risking a duplicate create; a rerun reconciles again.
-        raise RuntimeError("Draft creation outcome uncertain; inspect release before rerunning") from error
+        raise RuntimeError(
+            "Draft creation outcome uncertain; inspect release before rerunning"
+        ) from error
 
 
 def delete_draft_asset(repo, release, asset, approved_replacement_assets=None):
-    if (approved_replacement_assets is not None
-            and approved_replacement_assets.get(asset["id"]) != asset["name"]):
+    if (
+        approved_replacement_assets is not None
+        and approved_replacement_assets.get(asset["id"]) != asset["name"]
+    ):
         raise RuntimeError("Draft asset identity/name is not approved for replacement")
     fresh_draft(repo, release["id"])
     # Delete only the exact current asset identified during mismatch verification.
-    current = next((item for item in release_assets(repo, release["id"])
-                    if item["id"] == asset["id"]), None)
+    current = next(
+        (
+            item
+            for item in release_assets(repo, release["id"])
+            if item["id"] == asset["id"]
+        ),
+        None,
+    )
     if current is None:
         return
     if current["name"] != asset["name"]:
         raise RuntimeError("Draft asset changed before deletion")
-    if (approved_replacement_assets is not None
-            and approved_replacement_assets.get(current["id"]) != current["name"]):
+    if (
+        approved_replacement_assets is not None
+        and approved_replacement_assets.get(current["id"]) != current["name"]
+    ):
         raise RuntimeError("Draft asset identity/name is not approved for replacement")
     try:
         api(f"/repos/{repo}/releases/assets/{asset['id']}", "DELETE")
@@ -308,15 +396,31 @@ def delete_draft_asset(repo, release, asset, approved_replacement_assets=None):
         if not transient(error):
             raise
         fresh_draft(repo, release["id"])
-        if any(item["id"] == asset["id"] for item in release_assets(repo, release["id"])):
-            raise RuntimeError("Draft asset deletion outcome uncertain; inspect before rerunning") from error
+        if any(
+            item["id"] == asset["id"] for item in release_assets(repo, release["id"])
+        ):
+            raise RuntimeError(
+                "Draft asset deletion outcome uncertain; inspect before rerunning"
+            ) from error
 
 
-def upload_asset(repo, release, path, root, replace_draft_assets=False,
-                 approved_replacement_assets=None):
+def upload_asset(
+    repo,
+    release,
+    path,
+    root,
+    replace_draft_assets=False,
+    approved_replacement_assets=None,
+):
     fresh = fresh_draft(repo, release["id"])
-    existing = next((asset for asset in release_assets(repo, release["id"])
-                     if asset["name"] == path.name), None)
+    existing = next(
+        (
+            asset
+            for asset in release_assets(repo, release["id"])
+            if asset["name"] == path.name
+        ),
+        None,
+    )
     if existing:
         try:
             verify_uploaded(repo, existing, path, root)
@@ -326,7 +430,11 @@ def upload_asset(repo, release, path, root, replace_draft_assets=False,
                 raise
         delete_draft_asset(repo, release, existing, approved_replacement_assets)
         fresh = fresh_draft(repo, release["id"])
-    url = fresh["upload_url"].split("{")[0] + "?" + urllib.parse.urlencode({"name": path.name})
+    url = (
+        fresh["upload_url"].split("{")[0]
+        + "?"
+        + urllib.parse.urlencode({"name": path.name})
+    )
     print("Uploading:", path.name, flush=True)
     try:
         asset = api(url, "POST", path)
@@ -334,25 +442,44 @@ def upload_asset(repo, release, path, root, replace_draft_assets=False,
         if not transient(error):
             raise
         fresh_draft(repo, release["id"])
-        asset = next((item for item in release_assets(repo, release["id"])
-                      if item["name"] == path.name), None)
+        asset = next(
+            (
+                item
+                for item in release_assets(repo, release["id"])
+                if item["name"] == path.name
+            ),
+            None,
+        )
         if asset is None:
-            raise RuntimeError(f"Upload outcome uncertain for {path.name}; rerun after inspection") from error
+            raise RuntimeError(
+                f"Upload outcome uncertain for {path.name}; rerun after inspection"
+            ) from error
     verify_uploaded(repo, asset, path, root)
 
 
-def publish(repo, tag, commit, files, root, replace_draft_assets=False,
-            approved_replacement_assets=None):
-    assert tag_commit(repo, tag) == commit, "Release tag moved while builds were running"
+def publish(
+    repo,
+    tag,
+    commit,
+    files,
+    root,
+    replace_draft_assets=False,
+    approved_replacement_assets=None,
+):
+    assert tag_commit(repo, tag) == commit, (
+        "Release tag moved while builds were running"
+    )
     if replace_draft_assets:
         verify_replacement_files(files, tag, commit)
     release = create_draft(repo, tag, commit)
     for path in files:
-        upload_asset(repo, release, path, root, replace_draft_assets, approved_replacement_assets)
+        upload_asset(
+            repo, release, path, root, replace_draft_assets, approved_replacement_assets
+        )
     changes = "本版本包括实时思考文本速度估算，以及结束行独立的输入、输出平均速率。结束速率采用模型请求累计耗时，排除请求之间的编译和工具等待。"
     if version_from_tag(tag) == "0.167.0":
         changes = "本次将 ercode 版本同步至 0.167.0，合并 OpenAI Codex `main` 提交 `2f02d8461deac546ab0fdaafc23ee98e5fd48c3a`。源码基于该主分支提交，包含官方 0.167.0 的修复；保留 er 品牌、隔离配置目录、API 接入设置和输入/输出速率显示。"
-    body = f'''四个平台均在 GitHub 原生构建机上从 `{tag}` 标签源码编译，源码提交为 `{commit}`。
+    body = f"""四个平台均在 GitHub 原生构建机上从 `{tag}` 标签源码编译，源码提交为 `{commit}`。
 
 - Windows x86_64：ZIP 包。
 - Linux x86_64 / ARM64：MUSL 静态 tar.gz 包，不依赖系统 GLIBC。
@@ -374,16 +501,25 @@ Windows 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.p
 所有平台均已验证最终归档解压后的程序启动和可选安装脚本。登录、模型服务配置和项目所需的开发工具仍由使用者配置；此验证不等于所有模型调用和沙箱功能的端到端测试。
 
 {changes}
-'''
+"""
     payload = {
-        "name": "er " + tag, "body": body, "draft": False, "prerelease": False, "make_latest": "true",
+        "name": "er " + tag,
+        "body": body,
+        "draft": False,
+        "prerelease": False,
+        "make_latest": "true",
     }
     fresh_draft(repo, release["id"])
     assert tag_commit(repo, tag) == commit, "Release tag moved before publication"
     # Verify the full current asset set before making this release public.
     assets = release_assets(repo, release["id"])
     for path in files:
-        verify_uploaded(repo, next(asset for asset in assets if asset["name"] == path.name), path, root)
+        verify_uploaded(
+            repo,
+            next(asset for asset in assets if asset["name"] == path.name),
+            path,
+            root,
+        )
     try:
         api(f"/repos/{repo}/releases/{release['id']}", "PATCH", payload)
     except Exception as error:
@@ -391,26 +527,51 @@ Windows 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\\install.p
             raise
         result = api(f"/repos/{repo}/releases/{release['id']}")
         if result["draft"]:
-            raise RuntimeError("Publication outcome uncertain; inspect draft before rerunning") from error
-        if any(result.get(key) != payload[key] for key in ("name", "body", "prerelease")):
-            raise RuntimeError("Published release differs from requested state") from error
+            raise RuntimeError(
+                "Publication outcome uncertain; inspect draft before rerunning"
+            ) from error
+        if any(
+            result.get(key) != payload[key] for key in ("name", "body", "prerelease")
+        ):
+            raise RuntimeError(
+                "Published release differs from requested state"
+            ) from error
     result = api(f"/repos/{repo}/releases/{release['id']}")
     assert not result["draft"]
     assets = release_assets(repo, release["id"])
     for path in files:
-        verify_uploaded(repo, next(asset for asset in assets if asset["name"] == path.name), path, root)
+        verify_uploaded(
+            repo,
+            next(asset for asset in assets if asset["name"] == path.name),
+            path,
+            root,
+        )
     print("Published:", result["html_url"], flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"), required="GITHUB_REPOSITORY" not in os.environ)
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        required="GITHUB_REPOSITORY" not in os.environ,
+    )
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--runs", required=True, help="Comma-separated workflow run IDs, including platform retries")
-    parser.add_argument("--check-only", action="store_true",
-                        help="Download and validate packages without creating or changing a release")
-    parser.add_argument("--replace-draft-assets", action="store_true",
-                        help="Replace mismatched draft assets only after verifying all four native packages")
+    parser.add_argument(
+        "--runs",
+        required=True,
+        help="Comma-separated workflow run IDs, including platform retries",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Download and validate packages without creating or changing a release",
+    )
+    parser.add_argument(
+        "--replace-draft-assets",
+        action="store_true",
+        help="Replace mismatched draft assets only after verifying all four native packages",
+    )
     args = parser.parse_args()
     version_from_tag(args.tag)
     runs = [int(value.strip()) for value in args.runs.split(",")]
@@ -420,8 +581,13 @@ def main():
         root = Path(directory)
         files = collect(args.repo, builds, args.tag, commit, root)
         if args.check_only:
-            assert tag_commit(args.repo, args.tag) == commit, "Release tag moved during validation"
-            print("Validated all four native packages; no release changes made", flush=True)
+            assert tag_commit(args.repo, args.tag) == commit, (
+                "Release tag moved during validation"
+            )
+            print(
+                "Validated all four native packages; no release changes made",
+                flush=True,
+            )
         else:
             publish(args.repo, args.tag, commit, files, root, args.replace_draft_assets)
 

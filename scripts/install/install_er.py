@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Install a local er runtime package without exposing its helper executables."""
+
 import argparse
 import json
 import os
@@ -14,7 +15,12 @@ def install(package: Path, home: Path, bin_dir: Path) -> Path:
     metadata = json.loads((package / "codex-package.json").read_text())
     if metadata.get("entrypoint") != "bin/er":
         raise ValueError("Expected an er package with entrypoint bin/er")
-    for relative in ("bin/er", "bin/codex-code-mode-host", "bin/codex-exec-server", "codex-path/rg"):
+    for relative in (
+        "bin/er",
+        "bin/codex-code-mode-host",
+        "bin/codex-exec-server",
+        "codex-path/rg",
+    ):
         if not (package / relative).is_file():
             raise ValueError(f"Missing package component: {relative}")
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -42,8 +48,12 @@ def install(package: Path, home: Path, bin_dir: Path) -> Path:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("package", type=Path, help="Extracted runtime package directory")
+    parser.add_argument(
+        "package", type=Path, help="Extracted runtime package directory"
+    )
     parser.add_argument("--home", type=Path, default=Path.home() / ".ercode")
     parser.add_argument("--bin-dir", type=Path, default=Path.home() / ".local/bin")
     args = parser.parse_args()
-    print(f"Installed {install(args.package, args.home.resolve(), args.bin_dir.resolve())}")
+    print(
+        f"Installed {install(args.package, args.home.resolve(), args.bin_dir.resolve())}"
+    )

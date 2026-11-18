@@ -247,9 +247,10 @@ impl ConfigRequestProcessor {
             let (config, _) = self.model_catalog.current().await.map_err(|_| {
                 internal_error("API configuration was written but could not be reloaded; no key has been saved.")
             })?;
-            let (expected_provider, expected_model) = expected_api_config.as_ref().ok_or_else(|| {
-                internal_error("API setup settings are missing; no key has been saved.")
-            })?;
+            let (expected_provider, expected_model) =
+                expected_api_config.as_ref().ok_or_else(|| {
+                    internal_error("API setup settings are missing; no key has been saved.")
+                })?;
             if !ercode_api_config_matches(
                 &config.model_provider_id,
                 &config.model_provider,

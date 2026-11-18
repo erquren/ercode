@@ -31,7 +31,12 @@ class ErCodePackageTest(unittest.TestCase):
         companion = package / "bin" / f"codex-code-mode-host{suffix}"
         companion.write_bytes(b"companion")
         (package / "codex-resources").mkdir()
-        metadata = {"layoutVersion": 1, "variant": "codex", "entrypoint": f"bin/codex{suffix}", "resourcesDir": "codex-resources"}
+        metadata = {
+            "layoutVersion": 1,
+            "variant": "codex",
+            "entrypoint": f"bin/codex{suffix}",
+            "resourcesDir": "codex-resources",
+        }
         (package / "codex-package.json").write_text(json.dumps(metadata))
         return repo, package, suffix
 
@@ -41,19 +46,32 @@ class ErCodePackageTest(unittest.TestCase):
                 repo, package, suffix = self.fixture(Path(tmp), windows)
                 metadata_before = (package / "codex-package.json").read_bytes()
                 module.brand_package(package, repo)
-                self.assertEqual((package / "codex-package.json").read_bytes(), metadata_before)
+                self.assertEqual(
+                    (package / "codex-package.json").read_bytes(), metadata_before
+                )
                 binary = package / "bin" / f"ercode{suffix}"
                 self.assertEqual(binary.read_bytes(), b"test executable")
                 self.assertTrue(binary.stat().st_mode & 0o111)
-                self.assertEqual((package / "bin" / f"codex{suffix}").read_bytes(), binary.read_bytes())
-                self.assertEqual((package / "bin" / f"codex-code-mode-host{suffix}").read_bytes(), b"companion")
+                self.assertEqual(
+                    (package / "bin" / f"codex{suffix}").read_bytes(),
+                    binary.read_bytes(),
+                )
+                self.assertEqual(
+                    (package / "bin" / f"codex-code-mode-host{suffix}").read_bytes(),
+                    b"companion",
+                )
                 metadata = json.loads((package / "codex-package.json").read_text())
                 self.assertEqual(metadata["entrypoint"], f"bin/codex{suffix}")
                 self.assertEqual(metadata["variant"], "codex")
                 self.assertEqual(metadata["resourcesDir"], "codex-resources")
                 for name in ("LICENSE", "NOTICE"):
-                    self.assertEqual((repo / name).read_bytes(), (package / name).read_bytes())
-                self.assertEqual((package / "licenses/third_party/wezterm/LICENSE").read_text(), "third-party notice\n")
+                    self.assertEqual(
+                        (repo / name).read_bytes(), (package / name).read_bytes()
+                    )
+                self.assertEqual(
+                    (package / "licenses/third_party/wezterm/LICENSE").read_text(),
+                    "third-party notice\n",
+                )
 
     def test_refuses_existing_ercode(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -65,16 +83,38 @@ class ErCodePackageTest(unittest.TestCase):
             self.assertTrue((package / "bin/codex").is_file())
 
     def test_rejects_unexpected_entrypoint_and_variant(self):
-        for entrypoint, variant in (("../outside", "codex"), ("bin/codex", "codex-app-server")):
-            with self.subTest(entrypoint=entrypoint, variant=variant), tempfile.TemporaryDirectory() as tmp:
+        for entrypoint, variant in (
+            ("../outside", "codex"),
+            ("bin/codex", "codex-app-server"),
+        ):
+            with (
+                self.subTest(entrypoint=entrypoint, variant=variant),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 repo, package, _ = self.fixture(Path(tmp))
-                (package / "codex-package.json").write_text(json.dumps({"entrypoint": entrypoint, "variant": variant}))
+                (package / "codex-package.json").write_text(
+                    json.dumps({"entrypoint": entrypoint, "variant": variant})
+                )
                 with self.assertRaises(ValueError):
                     module.brand_package(package, repo)
 
     def test_archives_after_rebranding(self):
         events = []
-        with patch.object(module, "assemble_package", side_effect=lambda args: events.append("assemble") or Path("package")), patch.object(module, "brand_package", side_effect=lambda path: events.append("brand")), patch.object(module, "archive_package", side_effect=lambda path, args: events.append("archive")):
+        with (
+            patch.object(
+                module,
+                "assemble_package",
+                side_effect=lambda args: events.append("assemble") or Path("package"),
+            ),
+            patch.object(
+                module, "brand_package", side_effect=lambda path: events.append("brand")
+            ),
+            patch.object(
+                module,
+                "archive_package",
+                side_effect=lambda path, args: events.append("archive"),
+            ),
+        ):
             self.assertEqual(module.main([]), 0)
         self.assertEqual(events, ["assemble", "brand", "archive"])
 
@@ -88,19 +128,29 @@ class ErCodePackageTest(unittest.TestCase):
                 fixture.write_bytes(b"inert packaging fixture")
                 fixture.chmod(0o755)
                 output, archive = root / "out", root / "ercode.zip"
-                target = "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+                target = (
+                    "x86_64-pc-windows-msvc" if windows else "x86_64-unknown-linux-gnu"
+                )
                 args = [
-                    "--target", target,
-                    "--entrypoint-bin", str(fixture),
-                    "--code-mode-host-bin", str(fixture),
-                    "--rg-bin", str(fixture),
-                    "--strip", "none",
-                    "--package-dir", str(output),
-                    "--archive-output", str(archive),
+                    "--target",
+                    target,
+                    "--entrypoint-bin",
+                    str(fixture),
+                    "--code-mode-host-bin",
+                    str(fixture),
+                    "--rg-bin",
+                    str(fixture),
+                    "--strip",
+                    "none",
+                    "--package-dir",
+                    str(output),
+                    "--archive-output",
+                    str(archive),
                 ]
                 resources = (
                     ["--codex-command-runner-bin", "--codex-windows-sandbox-setup-bin"]
-                    if windows else ["--bwrap-bin"]
+                    if windows
+                    else ["--bwrap-bin"]
                 )
                 for flag in resources:
                     args.extend([flag, str(fixture)])
@@ -111,10 +161,15 @@ class ErCodePackageTest(unittest.TestCase):
                     self.assertIn(f"bin/{name}", entries)
                     canonical = "bin/codex.exe" if windows else "bin/codex"
                     self.assertIn(canonical, entries)
-                    self.assertEqual(packaged.read(canonical), packaged.read(f"bin/{name}"))
+                    self.assertEqual(
+                        packaged.read(canonical), packaged.read(f"bin/{name}")
+                    )
                     self.assertIn("LICENSE", entries)
                     self.assertIn("NOTICE", entries)
-                    self.assertEqual(packaged.read("NOTICE"), (module.REPO_ROOT / "NOTICE").read_bytes())
+                    self.assertEqual(
+                        packaged.read("NOTICE"),
+                        (module.REPO_ROOT / "NOTICE").read_bytes(),
+                    )
                     metadata = json.loads(packaged.read("codex-package.json"))
                     self.assertEqual(metadata["entrypoint"], canonical)
                 # A second build must not silently replace an existing package.

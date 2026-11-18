@@ -217,6 +217,10 @@ mod ercode_tests {
     use std::time::Duration;
 
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "The test must hold an active request while proving suspension waits for it"
+    )]
     async fn api_setup_gate_drains_inflight_requests_before_suspending() {
         let gate = Arc::new(RemoteRefreshGate::default());
         let active_request = gate.suspended.lock().await;

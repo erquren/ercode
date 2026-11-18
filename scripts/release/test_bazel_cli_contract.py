@@ -1,4 +1,5 @@
 """Check fork CLI labels without downloading Bazel's native toolchains."""
+
 from pathlib import Path
 import re
 import unittest
@@ -20,9 +21,9 @@ class BazelCliContractTests(unittest.TestCase):
 
     def test_daemon_package_test_resolves_its_declared_data(self):
         build = (ROOT / "codex-rs/cli/BUILD.bazel").read_text()
-        rule = re.search(r'rust_test\((.*?)\n\)', build, re.S).group(1)
-        data = re.search(r'data = \[(.*?)\]', rule).group(1)
-        for label in re.findall(r'\$\(rlocationpath ([^)]+)\)', rule):
+        rule = re.search(r"rust_test\((.*?)\n\)", build, re.S).group(1)
+        data = re.search(r"data = \[(.*?)\]", rule).group(1)
+        for label in re.findall(r"\$\(rlocationpath ([^)]+)\)", rule):
             self.assertIn(f'"{label}"', data)
         self.assertIn('"CARGO_BIN_EXE_er": "$(rlocationpath :er)"', rule)
 
