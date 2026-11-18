@@ -94,3 +94,20 @@ Transient reads/downloads have bounded retries. If a create, upload, deletion or
 publication response is lost, the publisher checks the remote state before
 continuing. An unresolved outcome stops for inspection rather than repeating a
 possibly completed write.
+
+## 0.170.0 release maintenance
+
+The 0.170.0 update preserves the `er` executable name while restoring the
+upstream Bazel `codex` target as a compatibility alias for integration tests.
+CI uses architecture-matched public hosted runners rather than upstream private
+runner groups. The postmerge caller grants the read-only Actions permission
+required by its V8 canary, and installer tests support multicall coreutils.
+
+For this version, a reviewed `.github/release-request.json` on
+`release-publish/0.170.0` can publish completed builds. The request pins the
+source commit and build run IDs. All four platform archives, their SHA-256
+checksums, version, target and source metadata must pass verification first.
+Only then may the publisher create a missing `0.170.0` tag at that exact commit.
+It never moves an existing tag. Read-only requests never create tags, and a
+conflicting tag or failed build stops publication. Published assets are never
+silently replaced.

@@ -713,7 +713,7 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{collector_url}/v1/metrics", pr
 
 #[tokio::test]
 async fn forward_rejects_stdin_credentials_on_opposite_sides_of_subcommand() -> Result<()> {
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("er")?;
     let home = TempDir::new()?;
     let remote = [
         "--remote",

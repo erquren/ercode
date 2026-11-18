@@ -19,6 +19,7 @@ jobs:
 
   v8-canary:
     permissions:
+      actions: read
       contents: read
       id-token: write
     name: v8-canary

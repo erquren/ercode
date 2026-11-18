@@ -8,11 +8,12 @@ import re
 import tarfile
 import tempfile
 import zipfile
+import urllib.error
 
 import publish_er
 
 REPO = 'erquren/ercode'
-TAG = '0.166.0'
+TAG = '0.170.0'
 BRANCH = 'refs/heads/release-publish/' + TAG
 
 
@@ -81,10 +82,35 @@ def inspect_release(repo, tag, root):
         print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 
 
+def optional_tag_commit(repo, tag):
+    """Only a missing tag is optional; authentication/network failures stay fatal."""
+    try:
+        return publish_er.tag_commit(repo, tag)
+    except urllib.error.HTTPError as error:
+        if error.code != 404:
+            raise
+        return None
+
+
+def ensure_verified_tag(repo, tag, commit):
+    """Create only after package verification; never update an existing ref."""
+    existing = optional_tag_commit(repo, tag)
+    if existing is not None and existing != commit:
+        raise ValueError('Release tag moved during verification')
+    if existing is None:
+        # POST is create-only. A concurrent creator causes a conflict, not an
+        # overwrite. Do not retry writes with uncertain outcomes.
+        publish_er.api(f'/repos/{repo}/git/refs', method='POST',
+                       data={'ref': f'refs/tags/{tag}', 'sha': commit})
+    if publish_er.tag_commit(repo, tag) != commit:
+        raise ValueError('Release tag does not match verified packages')
+
+
 def execute(request, repo, ref):
     validate_request(request, repo, ref)
-    commit = publish_er.tag_commit(repo, request['tag'])
-    if commit != request['source_commit']:
+    existing = optional_tag_commit(repo, request['tag'])
+    commit = request['source_commit']
+    if existing is not None and existing != commit:
         raise ValueError('Release tag no longer matches the reviewed source commit')
     with tempfile.TemporaryDirectory(prefix='er-release-request-') as directory:
         root = Path(directory)
@@ -94,12 +120,14 @@ def execute(request, repo, ref):
             return
         builds = publish_er.wait_for_builds(repo, request['runs'], request['tag'])
         files = publish_er.collect(repo, builds, request['tag'], commit, root)
-        if publish_er.tag_commit(repo, request['tag']) != commit:
+        verified_tag = optional_tag_commit(repo, request['tag'])
+        if (verified_tag is not None and verified_tag != commit) or (existing is not None and verified_tag is None):
             raise ValueError('Release tag moved during verification')
         if request['mode'] == 'check_only':
             inspect_release(repo, request['tag'], root)
             print('All four packages verified; no release changes made', flush=True)
             return
+        ensure_verified_tag(repo, request['tag'], commit)
         publish_er.publish(repo, request['tag'], commit, files, root, request['replace_draft_assets'],
                            approved_replacement_assets={int(key): name for key, name in request.get('approved_replacement_assets', {}).items()})
 

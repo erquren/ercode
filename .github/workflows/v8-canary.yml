@@ -126,13 +126,13 @@ jobs:
             sandbox: true
             target: x86_64-apple-darwin
             variant: ptrcomp-sandbox
-          - runner: macos-15-xlarge
+          - runner: macos-15
             bazel_config: ci-macos
             platform: macos_arm64
             sandbox: false
             target: aarch64-apple-darwin
             variant: release
-          - runner: macos-15-xlarge
+          - runner: macos-15
             bazel_config: ci-macos
             platform: macos_arm64
             sandbox: true

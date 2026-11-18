@@ -8,7 +8,7 @@ load("//bazel/rules:runtime_package.bzl", "release_binary")
 
 codex_rust_crate(
     name = "cli",
-    # ercode fork: expose only the er CLI executable.
+    # ercode fork: build only the er CLI executable.
     binaries_with_build_commit = ["er"],
     crate_name = "codex_cli",
     extra_binaries = [
@@ -16,6 +16,14 @@ codex_rust_crate(
     ],
     rustc_flags_extra = MACOS_WEBRTC_RUSTC_LINK_FLAGS,
     test_data_extra = glob(["src/**/snapshots/**"]),
+)
+
+# Keep the upstream test label and CARGO_BIN_EXE_codex contract without
+# building or shipping a second executable. Cross-crate tests still use it.
+alias(
+    name = "codex",
+    actual = ":er",
+    visibility = ["//visibility:public"],
 )
 
 # Real installation copies a full debug package. Run after other Bazel tests
@@ -31,7 +39,7 @@ rust_test(
     crate_name = "app_server_daemon_package",
     crate_root = "tests/app_server_daemon/package.rs",
     data = [":er"],
-    env = {"CARGO_BIN_EXE_er": "$(rlocationpath :codex)"},
+    env = {"CARGO_BIN_EXE_er": "$(rlocationpath :er)"},
     rustc_env = {"BAZEL_PACKAGE": "codex-rs/cli"},
     rustc_flags = MACOS_WEBRTC_RUSTC_LINK_FLAGS,
     tags = ["exclusive"],

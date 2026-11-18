@@ -2,7 +2,7 @@ name: ercode publish completed builds
 run-name: Publish er ${{ inputs.tag }} from completed builds
 on:
   push:
-    branches: ["release-publish/0.166.0"]
+    branches: ["release-publish/0.170.0"]
     paths: [".github/release-request.json"]
   workflow_dispatch:
     inputs:
@@ -28,7 +28,7 @@ permissions:
   contents: write
   actions: read
 concurrency:
-  group: ercode-publish-${{ inputs.tag || '0.166.0' }}
+  group: ercode-publish-${{ inputs.tag || '0.170.0' }}
   cancel-in-progress: false
 jobs:
   publish:

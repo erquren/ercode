@@ -448,7 +448,11 @@ class InstallShTest(unittest.TestCase):
                     capture_output=True,
                 )
             # A helper can outlive its parent CLI; retain its whole release.
-            with subprocess.Popen([str(helper), "300"]) as running:
+            # Some distributions ship sleep as a coreutils multicall binary:
+            # it dispatches by argv[0], not by the executable's on-disk name.
+            # Keep the actual executable inside the release so /proc and lsof
+            # still exercise retention of a running installed helper.
+            with subprocess.Popen(["sleep", "300"], executable=str(helper)) as running:
                 try:
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
