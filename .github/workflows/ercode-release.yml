@@ -4,9 +4,23 @@ run-name: ercode packages ${{ inputs.tag || github.ref_name }}
 on:
   push:
     branches: [main, "fix/**", "release-build/**"]
-    paths: ["codex-rs/**", "scripts/**", ".github/workflows/**", ".github/actions/**", ".github/scripts/**"]
+    paths:
+      [
+        "codex-rs/**",
+        "scripts/**",
+        ".github/workflows/**",
+        ".github/actions/**",
+        ".github/scripts/**",
+      ]
   pull_request:
-    paths: ["codex-rs/**", "scripts/**", ".github/workflows/**", ".github/actions/**", ".github/scripts/**"]
+    paths:
+      [
+        "codex-rs/**",
+        "scripts/**",
+        ".github/workflows/**",
+        ".github/actions/**",
+        ".github/scripts/**",
+      ]
   workflow_dispatch:
     inputs:
       tag:
