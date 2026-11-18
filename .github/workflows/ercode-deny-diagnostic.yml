@@ -38,5 +38,12 @@ jobs:
               response = urllib.request.urlopen(location, timeout=30)
           with response:
               log = response.read().decode("utf-8", errors="replace")
-          print("\n".join(log.replace(token, "***").splitlines()[-100:]))
+          import re
+          lines = re.sub(r"\x1b\[[0-9;]*m", "", log.replace(token, "***")).splitlines()
+          selected = set()
+          for i, line in enumerate(lines):
+              if re.search(r"error\[|RUSTSEC-|advisories .*FAILED", line):
+                  selected.update(range(max(0, i - 2), min(len(lines), i + 18)))
+          for i in sorted(selected):
+              print(lines[i])
           PY
