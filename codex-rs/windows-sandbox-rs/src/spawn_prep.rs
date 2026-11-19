@@ -264,6 +264,13 @@ pub(crate) fn allow_null_device_for_workspace_write(is_workspace_write: bool) {
     }
 }
 
+// A mandatory deny rule must either already exist or be applied successfully.
+// Optional device and compatibility ACL setup keeps its existing behavior.
+fn apply_required_deny_write_acl(path: &Path, apply: impl FnOnce() -> Result<bool>) -> Result<()> {
+    apply().with_context(|| format!("apply required deny-write ACL to {}", path.display()))?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_legacy_session_acl_rules(
     permissions: &ResolvedWindowsSandboxPermissions,
@@ -300,7 +307,7 @@ pub(crate) fn apply_legacy_session_acl_rules(
         }
         for p in &deny {
             for root_sid in deny_root_capabilities_for_path(p, acl_sids.write_root_sids) {
-                let _ = add_deny_write_ace(p, root_sid.sid.as_ptr());
+                apply_required_deny_write_acl(p, || add_deny_write_ace(p, root_sid.sid.as_ptr()))?;
             }
         }
         if !additional_deny_read_paths.is_empty() {
@@ -463,6 +470,34 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn mandatory_deny_acl_failure_stops_setup() {
+        let mut proceeded = false;
+        let result = super::apply_required_deny_write_acl(Path::new("protected"), || {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+        })
+        .map(|()| proceeded = true);
+        let error = result.expect_err("mandatory ACL failure must propagate");
+        assert!(!proceeded);
+        assert!(error.to_string().contains("protected"));
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn mandatory_deny_acl_accepts_existing_and_new_rules() {
+        for changed in [false, true] {
+            super::apply_required_deny_write_acl(Path::new("protected"), || Ok(changed))
+                .expect("existing or newly applied ACL is valid");
+        }
+    }
 
     fn workspace_profile(
         network_policy: NetworkSandboxPolicy,
