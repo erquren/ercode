@@ -16,7 +16,7 @@ macro_rules! dns_resolver_chain_impl {
                 }
             }
             Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
+                OpaqueError::from_display("unknown dns error (error missing)").into_boxed()
             }))
         }
 
@@ -29,7 +29,7 @@ macro_rules! dns_resolver_chain_impl {
                 }
             }
             Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
+                OpaqueError::from_display("unknown dns error (error missing)").into_boxed()
             }))
         }
 
@@ -42,7 +42,7 @@ macro_rules! dns_resolver_chain_impl {
                 }
             }
             Err(last_err.unwrap_or_else(|| {
-                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
+                OpaqueError::from_display("unknown dns error (error missing)").into_boxed()
             }))
         }
     };
