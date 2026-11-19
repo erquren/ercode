@@ -7,6 +7,8 @@ on:
     paths:
       [
         "codex-rs/**",
+        "third_party/**",
+        "MODULE.bazel*",
         "scripts/**",
         ".github/workflows/**",
         ".github/actions/**",
@@ -16,6 +18,8 @@ on:
     paths:
       [
         "codex-rs/**",
+        "third_party/**",
+        "MODULE.bazel*",
         "scripts/**",
         ".github/workflows/**",
         ".github/actions/**",
