@@ -1,11 +1,12 @@
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
 
-use crate::{BoxDnsResolver, DnsResolver, HickoryDns};
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    sync::OnceLock,
-};
+use crate::BoxDnsResolver;
+use crate::DnsResolver;
+use crate::HickoryDns;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::sync::OnceLock;
 
 static GLOBAL_DNS_RESOLVER: OnceLock<BoxDnsResolver> = OnceLock::new();
 

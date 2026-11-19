@@ -1,8 +1,7 @@
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    pin::Pin,
-    sync::Arc,
-};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use rama_core::error::BoxError;
 use rama_net::address::Domain;

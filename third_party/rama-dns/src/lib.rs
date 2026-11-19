@@ -50,12 +50,12 @@
     deny(clippy::unwrap_used, clippy::expect_used)
 )]
 
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::BoxError;
+use rama_core::error::OpaqueError;
 use rama_net::address::Domain;
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::sync::Arc;
 
 /// A resolver of domains and other dns data.
 pub trait DnsResolver: Sized + Send + Sync + 'static {
@@ -149,9 +149,13 @@ impl<R: DnsResolver> DnsResolver for Option<R> {
 
 mod global;
 #[doc(inline)]
-pub use global::{
-    GlobalDnsResolver, global_dns_resolver, init_global_dns_resolver, try_init_global_dns_resolver,
-};
+pub use global::GlobalDnsResolver;
+#[doc(inline)]
+pub use global::global_dns_resolver;
+#[doc(inline)]
+pub use global::init_global_dns_resolver;
+#[doc(inline)]
+pub use global::try_init_global_dns_resolver;
 
 pub mod hickory;
 #[doc(inline)]
@@ -159,11 +163,15 @@ pub use hickory::HickoryDns;
 
 mod in_memory;
 #[doc(inline)]
-pub use in_memory::{DnsOverwrite, InMemoryDns};
+pub use in_memory::DnsOverwrite;
+#[doc(inline)]
+pub use in_memory::InMemoryDns;
 
 mod deny_all;
 #[doc(inline)]
-pub use deny_all::{DenyAllDns, DnsDeniedError};
+pub use deny_all::DenyAllDns;
+#[doc(inline)]
+pub use deny_all::DnsDeniedError;
 
 pub mod chain;
 

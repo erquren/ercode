@@ -1,7 +1,8 @@
 use crate::DnsResolver;
 use rama_net::address::Domain;
 use rama_utils::macros::error::static_str_error;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

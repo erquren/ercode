@@ -1,14 +1,20 @@
 use crate::DnsResolver;
-use ahash::{HashMap, HashMapExt as _};
-use rama_core::error::{ErrorContext as _, OpaqueError};
-use rama_net::address::{AsDomainRef, Domain, DomainTrie};
-use serde::{Deserialize, Serialize, de};
+use ahash::HashMap;
+use ahash::HashMapExt as _;
+use rama_core::error::ErrorContext as _;
+use rama_core::error::OpaqueError;
+use rama_net::address::AsDomainRef;
+use rama_net::address::Domain;
+use rama_net::address::DomainTrie;
+use serde::Deserialize;
+use serde::Serialize;
+use serde::de;
 
-use std::{
-    borrow::Cow,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-};
+use std::borrow::Cow;
+use std::net::IpAddr;
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 /// Wrapper struct that can be used to add
@@ -243,7 +249,8 @@ impl DnsResolver for InMemoryDns {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
 
     use super::*;
 

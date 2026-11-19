@@ -1,6 +1,7 @@
 use crate::DnsResolver;
 use rama_net::address::Domain;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 macro_rules! impl_dns_resolver_either_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -60,7 +61,8 @@ mod tests {
     use rama_core::combinators::Either;
     use rama_core::error::BoxError;
     use rama_net::address::Domain;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
 
     // Mock DNS resolvers for testing
     struct MockResolver1;

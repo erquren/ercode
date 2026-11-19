@@ -1,6 +1,8 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
-use rama_core::error::{BoxError, OpaqueError};
+use rama_core::error::BoxError;
+use rama_core::error::OpaqueError;
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
@@ -69,10 +71,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DenyAllDns, InMemoryDns};
+    use crate::DenyAllDns;
+    use crate::InMemoryDns;
     use rama_core::combinators::Either;
     use rama_net::address::ip::IPV6_LOCALHOST;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
 
     #[tokio::test]
     async fn test_empty_chain_vec() {

@@ -1,20 +1,19 @@
 //! dns using the [`hickory_resolver`] crate
 
-use std::{
-    net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
+use std::sync::Arc;
 
 pub use hickory_resolver as resolver;
-use hickory_resolver::{
-    TokioResolver,
-    config::ResolverConfig,
-    net::NetError,
-    net::runtime::TokioRuntimeProvider,
-    proto::rr::{Name, RData},
-};
+use hickory_resolver::TokioResolver;
+use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::net::NetError;
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::Name;
+use hickory_resolver::proto::rr::RData;
 
-use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::error::ErrorContext;
+use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;

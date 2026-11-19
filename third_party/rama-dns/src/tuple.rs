@@ -2,7 +2,8 @@ use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 use super::DnsResolver;
 
