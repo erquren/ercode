@@ -70,7 +70,8 @@ impl Package {
 
 #[test]
 fn package_directories_have_independent_owners() -> Result<()> {
-    let workers: Vec<_> = (0..32).map(|_| thread::spawn(Package::new)).collect();
+    // Spawn every worker before joining any, keeping this a concurrent test.
+    let workers: [_; 32] = std::array::from_fn(|_| thread::spawn(Package::new));
     let mut packages = workers
         .into_iter()
         .map(|worker| worker.join().expect("package creator"))

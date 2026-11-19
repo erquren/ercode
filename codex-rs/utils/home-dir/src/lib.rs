@@ -111,8 +111,12 @@ mod tests {
             .to_str()
             .expect("missing codex home path should be valid utf-8");
 
-        let err = find_codex_home_from_env(None, Some(missing_str), None)
-            .expect_err("missing CODEX_HOME");
+        let err = find_codex_home_from_env(
+            /*ercode_home_env*/ None,
+            Some(missing_str),
+            /*default_home*/ None,
+        )
+        .expect_err("missing CODEX_HOME");
         assert_eq!(err.kind(), ErrorKind::NotFound);
         assert!(
             err.to_string().contains("CODEX_HOME"),
@@ -129,8 +133,12 @@ mod tests {
             .to_str()
             .expect("file codex home path should be valid utf-8");
 
-        let err =
-            find_codex_home_from_env(None, Some(file_str), None).expect_err("file CODEX_HOME");
+        let err = find_codex_home_from_env(
+            /*ercode_home_env*/ None,
+            Some(file_str),
+            /*default_home*/ None,
+        )
+        .expect_err("file CODEX_HOME");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(
             err.to_string().contains("not a directory"),
@@ -146,8 +154,12 @@ mod tests {
             .to_str()
             .expect("temp codex home path should be valid utf-8");
 
-        let resolved =
-            find_codex_home_from_env(None, Some(temp_str), None).expect("valid CODEX_HOME");
+        let resolved = find_codex_home_from_env(
+            /*ercode_home_env*/ None,
+            Some(temp_str),
+            /*default_home*/ None,
+        )
+        .expect("valid CODEX_HOME");
         let expected = temp_home
             .path()
             .canonicalize()
@@ -178,7 +190,12 @@ mod tests {
             "old fixture credentials",
         )
         .unwrap();
-        let resolved = find_codex_home_from_env(None, None, Some(home.path().into())).unwrap();
+        let resolved = find_codex_home_from_env(
+            /*ercode_home_env*/ None,
+            /*codex_home_env*/ None,
+            Some(home.path().into()),
+        )
+        .unwrap();
         assert_eq!(resolved.as_path(), home.path().join(".ercode"));
         assert!(!resolved.as_path().exists());
         assert!(home.path().join(".codex/auth.json").is_file());
@@ -188,8 +205,12 @@ mod tests {
     fn ercode_home_takes_precedence_over_explicit_codex_home() {
         let ercode = TempDir::new().unwrap();
         let codex = TempDir::new().unwrap();
-        let resolved =
-            find_codex_home_from_env(ercode.path().to_str(), codex.path().to_str(), None).unwrap();
+        let resolved = find_codex_home_from_env(
+            ercode.path().to_str(),
+            codex.path().to_str(),
+            /*default_home*/ None,
+        )
+        .unwrap();
         // Match the public path type's Windows verbatim-prefix normalization.
         let expected = AbsolutePathBuf::from_absolute_path(ercode.path().canonicalize().unwrap())
             .expect("absolute home");
@@ -200,8 +221,12 @@ mod tests {
     fn invalid_ercode_home_does_not_fall_back_to_codex_home() {
         let codex = TempDir::new().unwrap();
         let missing = codex.path().join("missing");
-        let err = find_codex_home_from_env(missing.to_str(), codex.path().to_str(), None)
-            .expect_err("primary override must not silently fall back");
+        let err = find_codex_home_from_env(
+            missing.to_str(),
+            codex.path().to_str(),
+            /*default_home*/ None,
+        )
+        .expect_err("primary override must not silently fall back");
         assert_eq!(err.kind(), ErrorKind::NotFound);
         assert!(err.to_string().contains("ERCODE_HOME"));
     }
@@ -209,7 +234,9 @@ mod tests {
     #[test]
     fn empty_primary_override_preserves_explicit_legacy_compatibility() {
         let codex = TempDir::new().unwrap();
-        let resolved = find_codex_home_from_env(Some(""), codex.path().to_str(), None).unwrap();
+        let resolved =
+            find_codex_home_from_env(Some(""), codex.path().to_str(), /*default_home*/ None)
+                .unwrap();
         // Match the public path type's Windows verbatim-prefix normalization.
         let expected = AbsolutePathBuf::from_absolute_path(codex.path().canonicalize().unwrap())
             .expect("absolute home");

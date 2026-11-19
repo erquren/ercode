@@ -1,0 +1,121 @@
+name: ErCode focused native Windows validation
+
+# Early diagnostic signal only, not a replacement for complete release CI.
+on:
+  push:
+    branches: [ci/ercode-0.170.0-windows-focused]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ercode-native-focused-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-focused:
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    runs-on: windows-2022
+    name: Focused native Windows regression validation
+    environment:
+      name: bazel
+      deployment: false
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        id: prepare_bazel
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-msvc
+          cache-scope: bazel-${{ github.job }}
+
+      - name: Prepare native Windows audio dependencies
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/setup-bazel-windows
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Native sandbox regression (unchanged unit target)
+        shell: bash
+        run: |
+          bazel_targets=(
+            //codex-rs/windows-sandbox-rs:windows-sandbox-rs-unit-tests
+          )
+
+          bazel_test_args=(
+            test
+            --config=ci-windows-msvc
+            --platforms=//:windows_x86_64_msvc
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_native_main=true
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${bazel_targets[@]}"
+
+      - name: Native home-dir, WebRTC and PTY fixtures
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bazel_targets=(
+            //codex-rs/utils/home-dir:home-dir-unit-tests
+            //codex-rs/realtime-webrtc:all
+            //codex-rs/utils/pty:all
+          )
+
+          bazel_test_args=(
+            test
+            --config=ci-windows-msvc
+            --platforms=//:windows_x86_64_msvc
+            --test_tag_filters=-argument-comment-lint
+            --test_verbose_timeout_warnings
+            --build_metadata=COMMIT_SHA=${GITHUB_SHA}
+            --build_metadata=TAG_windows_native_main=true
+          )
+
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-msvc-host-platform \
+            -- \
+            "${bazel_test_args[@]}" \
+            -- \
+            "${bazel_targets[@]}"
+
+      - name: Upload Bazel execution logs
+        if: always() && !cancelled()
+        continue-on-error: true
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: bazel-execution-logs-test-windows-native-x86_64-pc-windows-msvc
+          path: ${{ runner.temp }}/bazel-execution-logs
+          if-no-files-found: ignore
+
+      # Save the job-scoped Bazel repository cache after cache misses. Keep the
+      # upload non-fatal so cache service issues never fail the job itself.
+      - name: Save bazel repository cache
+        if: always() && !cancelled() && steps.prepare_bazel.outputs.repository-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        with:
+          path: ${{ steps.prepare_bazel.outputs.repository-cache-path }}
+          key: ${{ steps.prepare_bazel.outputs.repository-cache-key }}
+
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
