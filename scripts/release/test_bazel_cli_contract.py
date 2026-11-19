@@ -55,6 +55,18 @@ class BazelCliContractTests(unittest.TestCase):
                     self.assertTrue(resource.is_file())
                     self.assertIn(resource, declared)
 
+    def test_cli_test_binary_lookups_match_declared_cargo_targets(self):
+        manifest = (ROOT / "codex-rs/cli/Cargo.toml").read_text()
+        binaries = set(re.findall(r'\[\[bin\]\]\s*name = "([^"]+)"', manifest))
+        self.assertIn("er", binaries)
+        for source in (ROOT / "codex-rs/cli/tests").rglob("*.rs"):
+            for name in re.findall(
+                r'(?:cargo_bin|app_server_json_shutdown_event)\(\s*"([^"]+)"',
+                source.read_text(),
+            ):
+                with self.subTest(source=str(source.relative_to(ROOT)), binary=name):
+                    self.assertIn(name, binaries)
+
     def test_cli_exec_server_uses_the_cargo_binary_name(self):
         test = (ROOT / "codex-rs/cli/tests/exec_server.rs").read_text()
         self.assertIn('cargo_bin("er")', test)

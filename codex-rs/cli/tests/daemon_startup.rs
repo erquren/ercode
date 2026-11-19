@@ -362,12 +362,16 @@ async fn daemon_startup(command: &str) -> Result<()> {
             }
         } else if command == "bedrock-running" {
             env.remove("AWS_BEARER_TOKEN_BEDROCK");
-            steps.push_back(("UseanAPIkeyoranotherprovider", b"3"));
+            // ErCode opens API setup first. Escape is the supported route to
+            // the alternative-provider menu, where Bedrock remains option 2.
+            steps.push_back(("APIBaseURL·1/3", b"\x1b"));
             steps.push_back(("UseAmazonBedrock", b"2"));
             "Continuewithdetectedcredentials"
         } else if bedrock_onboarding {
-            // With GCP disabled, only Bedrock makes the sign-in menu advertise another provider.
-            "UseanAPIkeyoranotherprovider"
+            // Exercise the real API-first entry point, then verify Bedrock is
+            // still offered after daemon auto-start (not just generic API setup).
+            steps.push_back(("APIBaseURL·1/3", b"\x1b"));
+            "UseAmazonBedrock"
         } else {
             args.extend([command.into(), "--strict-config".into()]);
             if command == "resume" {

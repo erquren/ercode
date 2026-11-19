@@ -4,7 +4,7 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 fn ercode_command(home: &TempDir) -> Result<assert_cmd::Command> {
-    let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("ercode")?);
+    let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("er")?);
     command.env("ERCODE_HOME", home.path());
     command.env("CODEX_HOME", home.path());
     Ok(command)

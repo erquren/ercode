@@ -131,7 +131,7 @@ fn agents_reject_inputs_that_cannot_be_applied() -> Result<()> {
 #[test]
 fn app_server_emits_json_info_events() -> Result<()> {
     let codex_home = TempDir::new()?;
-    let event = app_server_json_shutdown_event("codex", &["app-server"], codex_home.path())?;
+    let event = app_server_json_shutdown_event("er", &["app-server"], codex_home.path())?;
 
     assert_eq!(
         event,
