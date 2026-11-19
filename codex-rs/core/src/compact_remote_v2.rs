@@ -323,7 +323,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context,
                 stream,
                 CompactionRequestKind::Background(&cancellation),
-                None,
+                /*model_request_started_at*/ None,
             )
             .await;
         }

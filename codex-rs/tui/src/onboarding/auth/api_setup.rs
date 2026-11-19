@@ -291,12 +291,12 @@ impl AuthModeWidget {
                         state.field = ApiSetupField::Model;
                     }
                 }
-                self.set_error(None);
+                self.set_error(/*message*/ None);
             } else if keys::CONFIRM.is_pressed(*event) {
                 match state.validate_current() {
                     Err(error) => self.set_error(Some(error.into())),
                     Ok(()) => {
-                        self.set_error(None);
+                        self.set_error(/*message*/ None);
                         match state.field {
                             ApiSetupField::BaseUrl => {
                                 state.field = if state.base_url.starts_with("http://") {
@@ -318,7 +318,7 @@ impl AuthModeWidget {
                 match event.code {
                     KeyCode::Backspace => {
                         state.current_value_mut().pop();
-                        self.set_error(None);
+                        self.set_error(/*message*/ None);
                     }
                     KeyCode::Char(c)
                         if !c.is_control()
@@ -327,7 +327,7 @@ impl AuthModeWidget {
                             ) =>
                     {
                         state.current_value_mut().push(c);
-                        self.set_error(None);
+                        self.set_error(/*message*/ None);
                     }
                     _ => {}
                 }
@@ -355,7 +355,7 @@ impl AuthModeWidget {
         // Pasting replaces a field, so pasting an endpoint does not append to its default.
         *state.current_value_mut() = value.to_owned();
         drop(guard);
-        self.set_error(None);
+        self.set_error(/*message*/ None);
         self.request_frame.schedule_frame();
         true
     }
@@ -365,7 +365,7 @@ impl AuthModeWidget {
             self.disallow_api_login();
             return;
         }
-        self.set_error(None);
+        self.set_error(/*message*/ None);
         *self.sign_in_state.write().unwrap() =
             SignInState::ApiKeyEntry(ApiKeyInputState::default());
         self.request_frame.schedule_frame();
