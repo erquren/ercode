@@ -61,6 +61,14 @@ jobs:
         with:
           persist-credentials: false
 
+      # Preserve build/test toolchains while reclaiming unrelated preinstalled SDKs.
+      - name: Reclaim unused SDK space (hosted Ubuntu)
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 .github/scripts/free_bazel_linux_disk.py
+
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
@@ -144,7 +152,7 @@ jobs:
       contents: read
       id-token: write
     # Build and test Windows shards on separate Windows runners.
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -479,6 +487,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      # Preserve build/test toolchains while reclaiming unrelated preinstalled SDKs.
+      - name: Reclaim unused SDK space (hosted Ubuntu)
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        shell: bash
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: python3 .github/scripts/free_bazel_linux_disk.py
 
       - name: Prepare Bazel CI
         id: prepare_bazel
