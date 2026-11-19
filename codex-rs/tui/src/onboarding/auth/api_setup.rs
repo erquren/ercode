@@ -468,7 +468,7 @@ mod tests {
         let rendered = buffer
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(!rendered.contains(&state.value));
         assert!(rendered.contains("••••••••"));
