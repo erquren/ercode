@@ -13,11 +13,11 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 pub const BUILD_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 pub const WAIT: Duration = Duration::from_secs(/*secs*/ 10);
@@ -50,6 +50,43 @@ pub fn wait_for_helper_reaped(root: &std::path::Path) -> Result<()> {
 }
 
 struct Package(PathBuf);
+impl Package {
+    fn new() -> std::io::Result<Self> {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(/*v*/ 0);
+        loop {
+            let id = NEXT_ID.fetch_add(/*val*/ 1, Ordering::Relaxed);
+            let root =
+                std::env::temp_dir().join(format!("voice-actor-{}-{id}", std::process::id()));
+            // SystemTime is not unique across parallel tests on Windows. Never
+            // reuse a directory another fixture owns (or an earlier run left).
+            match fs::create_dir(&root) {
+                Ok(()) => return Ok(Self(root)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+#[test]
+fn package_directories_have_independent_owners() -> Result<()> {
+    let workers: Vec<_> = (0..32).map(|_| thread::spawn(Package::new)).collect();
+    let mut packages = workers
+        .into_iter()
+        .map(|worker| worker.join().expect("package creator"))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let paths: std::collections::HashSet<_> = packages.iter().map(|package| &package.0).collect();
+    ensure!(paths.len() == packages.len(), "fixtures shared a directory");
+    let removed = packages.pop().expect("at least one package");
+    let removed_path = removed.0.clone();
+    drop(removed);
+    ensure!(!removed_path.exists(), "package was not removed");
+    ensure!(
+        packages.iter().all(|package| package.0.is_dir()),
+        "cleanup removed another fixture"
+    );
+    Ok(())
+}
 impl Drop for Package {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -70,9 +107,7 @@ pub fn package(test: &str) -> Result<Option<PathBuf>> {
                 .to_owned(),
         ));
     }
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let package =
-        Package(std::env::temp_dir().join(format!("voice-actor-{}-{nonce}", std::process::id())));
+    let package = Package::new().context("create private voice test package")?;
     let root = &package.0;
     fs::create_dir_all(root.join("bin"))?;
     fs::create_dir_all(root.join("codex-resources/voice/bin"))?;

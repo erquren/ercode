@@ -190,7 +190,10 @@ mod tests {
         let codex = TempDir::new().unwrap();
         let resolved =
             find_codex_home_from_env(ercode.path().to_str(), codex.path().to_str(), None).unwrap();
-        assert_eq!(resolved.as_path(), ercode.path().canonicalize().unwrap());
+        // Match the public path type's Windows verbatim-prefix normalization.
+        let expected = AbsolutePathBuf::from_absolute_path(ercode.path().canonicalize().unwrap())
+            .expect("absolute home");
+        assert_eq!(resolved, expected);
     }
 
     #[test]
@@ -207,7 +210,10 @@ mod tests {
     fn empty_primary_override_preserves_explicit_legacy_compatibility() {
         let codex = TempDir::new().unwrap();
         let resolved = find_codex_home_from_env(Some(""), codex.path().to_str(), None).unwrap();
-        assert_eq!(resolved.as_path(), codex.path().canonicalize().unwrap());
+        // Match the public path type's Windows verbatim-prefix normalization.
+        let expected = AbsolutePathBuf::from_absolute_path(codex.path().canonicalize().unwrap())
+            .expect("absolute home");
+        assert_eq!(resolved, expected);
     }
 
     #[test]
